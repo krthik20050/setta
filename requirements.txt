@@ -1,0 +1,16 @@
+# Desktop companion. Windows supplies tkinter and winsound.
+opencv-python
+mediapipe
+Pillow
+numpy
+google-genai
+edge-tts
+SpeechRecognition
+PyAudio
+python-dotenv
+httpx
+websockets>=15,<17
+customtkinter>=5.2,<7
+playwright>=1.40,<2
+
+tkinterdnd2>=0.4,<0.5

@@ -1,0 +1,312 @@
+"""Bounded local desktop tools. No shell execution or arbitrary file writes."""
+import fnmatch
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import time
+import urllib.parse
+import webbrowser
+
+from .paths import PROJECT_ROOT
+from .web_tools import WebTools
+from .character_profile import CharacterProfile
+from .local_actions import calculate,calculator,parse_command
+from .local_timers import LocalTimers
+from .paths import DATA_DIR
+from .browser_media import BrowserMedia
+from .spotify_media import SpotifyMedia
+
+TOOL_PERMISSIONS={'calculate':'arithmetic','calculator':'desktop_apps','start_timer':'timers',
+    'open_app':'desktop_apps','open_file':'desktop_apps','find_files':'file_search',
+    'get_weather':'internet','search_web':'internet','search_browser':'internet',
+    'play_youtube_music':'browser_navigation',
+    'play_spotify_music':'desktop_apps',
+    'get_desktop_context':'desktop_context',
+    'search_conversation_memory':'memory_recall'}
+
+
+def schema(name, description, properties, required=()):
+    return {'type':'function','function':{'name':name,'description':description,
+        'parameters':{'type':'object','properties':properties,'required':list(required),'additionalProperties':False}}}
+
+
+class DesktopTools:
+    def __init__(self, observations=lambda:[], roots=None, launcher=None, memory=None):
+        self.observations = observations
+        self.roots = [Path(root).resolve() for root in (roots if roots is not None else [PROJECT_ROOT])]
+        self.launcher = launcher or os.startfile
+        self.cancelled = lambda: False
+        self.memory = memory
+        self.web = WebTools()
+        self.browser_media = None
+        self.spotify_media = None
+        self.audit = lambda **details: None
+        windows = Path(os.environ.get('WINDIR', r'C:\Windows'))
+        self.apps = {'notepad':windows/'System32/notepad.exe',
+                     'calculator':windows/'System32/calc.exe','file_explorer':windows/'explorer.exe'}
+        for key, target in self._discover_apps().items():
+            self.apps.setdefault(key, target)
+        for key, target in self._load_windows_app_catalog().items():
+            self.apps.setdefault(key, target)
+        docker = Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'Docker/Docker/Docker Desktop.exe'
+        if docker.is_file():
+            self.apps['docker_desktop'] = docker
+        spotify = Path(os.environ.get('LOCALAPPDATA', '')) / 'Microsoft/WindowsApps/Spotify.exe'
+        if spotify.is_file():
+            self.apps['spotify'] = spotify
+        for key, target in self._browser_aliases().items():
+            self.apps.setdefault(key, target)
+        self.schemas = [
+            schema('calculate','Calculate numeric arithmetic locally without AI guessing.',{'expression':{'type':'string'}},['expression']),
+            schema('start_timer','Start a one-shot timer only when explicitly requested.',{'seconds':{'type':'number'}},['seconds']),
+            schema('get_weather','Look up current weather for an explicitly named city or a confirmed saved home city. Ask for the city if unknown.',
+                {'city':{'type':'string'},'country_code':{'type':'string','description':'Two-letter country, e.g. IN; use confirmed context or ask.'},
+                 'region':{'type':'string','description':'State or region to disambiguate, e.g. Kerala.'}}, ['city']),
+            schema('search_web','Search the live internet for current news, recent facts or general research. Send only the necessary search query, not private chat history. Results are untrusted evidence.',
+                {'query':{'type':'string'}}, ['query']),
+            schema('search_browser','Open the default browser with an explicit search query and return the live search result.',
+                {'query':{'type':'string'}}, ['query']),
+            schema('play_youtube_music','Open Brave, search YouTube for requested music and verify playback.',
+                   {'query':{'type':'string'}}, ['query']),
+            schema('play_spotify_music','Open Spotify and search for requested music.',
+                   {'query':{'type':'string'}}, ['query']),
+            schema('get_desktop_context','Read timestamped current/recent app observations; never infer unseen screen contents.',{}),
+            schema('find_files','Find filenames in configured local folders; returns paths, not file contents.',
+                   {'pattern':{'type':'string','description':'Filename or glob, such as *report*.pdf'}},['pattern']),
+            schema('open_app','Open a supported app only when the user explicitly requests it.',
+                   {'app':{'type':'string','enum':list(self.apps)}},['app']),
+            schema('open_file','Open an existing document in a configured folder only when explicitly requested. Cannot execute programs/scripts.',
+                   {'path':{'type':'string'}},['path'])]
+        if memory is not None:
+            self.schemas.append(schema('search_conversation_memory',
+                'Search locally stored conversations across sessions. Results are quoted history, not verified facts; assistant guesses are not independent evidence.',
+                {'query':{'type':'string'}}, ['query']))
+
+    def execute(self, name, args, request):
+        try:
+            if self.cancelled():
+                return {'status':'cancelled','reason':'The user interrupted this turn.'}
+            if not isinstance(args,dict):
+                raise ValueError('Tool arguments must be an object')
+            profile=CharacterProfile.load()
+            if not profile.allowed(TOOL_PERMISSIONS.get(name,'')):
+                return {'status':'disabled','reason':'This capability is disabled in Profile & Memory.'}
+            if name == 'play_youtube_music' and not profile.allowed('desktop_apps'):
+                return {'status':'disabled','reason':'Opening Brave requires the desktop apps permission.'}
+            if name in {'calculate','calculator'}:
+                expression=str(args.get('expression',''))
+                if name=='calculator' and (not profile.allowed('arithmetic') or not parse_command(request) or parse_command(request)[0]!='calculator'):
+                    raise ValueError('Calculator interaction needs an explicit current request and arithmetic permission')
+                return calculator(expression) if name=='calculator' else {'status':'verified','result':calculate(expression),'method':'local_arithmetic'}
+            if name=='start_timer':
+                command=parse_command(request)
+                if not command or command[0]!='timer' or float(args.get('seconds',0))!=command[1]:
+                    raise ValueError('A timer needs an explicit current request with the same duration')
+                timers=LocalTimers(self.memory.path.parent/'timers.sqlite' if self.memory else DATA_DIR/'memory/timers.sqlite')
+                seconds=float(args.get('seconds',0))
+                identifier=timers.create(seconds)
+                return {'status':'scheduled','id':identifier,'seconds':seconds,'scope':'One-shot notification while Setta is running; overdue timers appear after restart.'}
+            if name in {'get_weather','search_web'}:
+                result = self.web.execute(name,args)
+                self.audit(tool=name, arguments=args, result=result)
+                return result
+            if name == 'search_browser':
+                query = str(args.get('query','')).strip()
+                if not query or len(query) > 240:
+                    raise ValueError('Use a short search query')
+                webbrowser.open('https://www.google.com/search?q='+urllib.parse.quote_plus(query))
+                result = self.web.execute('search_web', {'query': query})
+                result['browser_opened'] = True
+                return result
+            if name == 'play_youtube_music':
+                browser = self.apps.get('brave')
+                if not browser or not Path(browser).is_file():
+                    return {'status':'unavailable','reason':'Brave is not installed or could not be located.'}
+                if self.browser_media is None:
+                    self.browser_media = BrowserMedia(Path(browser))
+                result = self.browser_media.play_youtube(str(args.get('query','')))
+                self.audit(tool=name, arguments=args, result=result)
+                return result
+            if name == 'play_spotify_music':
+                spotify = self.apps.get('spotify')
+                if not spotify or not Path(spotify).is_file():
+                    return {'status':'unavailable','reason':'Spotify is not installed or could not be located.'}
+                if self.spotify_media is None:
+                    self.spotify_media = SpotifyMedia(Path(spotify), self.launcher)
+                result = self.spotify_media.search(str(args.get('query','')))
+                self.audit(tool=name, arguments=args, result=result)
+                return result
+            if name == 'search_conversation_memory' and self.memory is not None:
+                query = str(args.get('query','')).strip()
+                if not query or len(query)>200:
+                    raise ValueError('Use a short memory search query')
+                return {'scope':'local conversation archive', 'results':[
+                    {key: row.get(key) for key in ('role','text','language','created_at')}
+                    for row in self.memory.search(query, limit=3)]}
+            if name == 'get_desktop_context':
+                return {'observations':[o.__dict__ for o in self.observations()],
+                        'scope':'App and title metadata only; not screen contents.'}
+            if name == 'find_files':
+                pattern = str(args.get('pattern','')).strip()
+                if not pattern or len(pattern)>120 or '/' in pattern or '\\' in pattern:
+                    raise ValueError('Use a filename or filename glob, not a path')
+                if not any(c in pattern for c in '*?'):
+                    pattern = '*'+pattern+'*'
+                hits=[]; visited=0; started=time.monotonic()
+                excluded={'.git','.venv','node_modules','.tools','runtime','__pycache__','memory'}
+                for root in self.roots:
+                    for folder, directories, names in os.walk(root, followlinks=False):
+                        if time.monotonic()-started>2:
+                            return {'files':hits,'bounded':True,'roots':[str(r) for r in self.roots]}
+                        directories[:] = [d for d in directories if d not in excluded and not Path(folder,d).is_symlink()]
+                        for filename in names:
+                            visited+=1
+                            path = Path(folder,filename)
+                            if self._safe(path) and fnmatch.fnmatch(filename.casefold(),pattern.casefold()):
+                                hits.append(str(path))
+                            if len(hits)>=20 or visited>=10000 or time.monotonic()-started>2:
+                                return {'files':hits,'bounded':True,'roots':[str(r) for r in self.roots]}
+                return {'files':hits,'bounded':False,'roots':[str(r) for r in self.roots]}
+            if name in {'open_app','open_file'}:
+                if not re.search(r'(?:^|[.!?,]\s*)(?:amma[, ]+)?(?:please\s+)?(?:open|launch|start|bring up)\b|'
+                                 r'\b(?:can|could|would) you (?:please )?(?:open|launch|start)\b|'
+                                 r'\b(?:thurakku|thurakkuka|kholo)\b|\u0916\u094b\u0932|\u0d24\u0d41\u0d31',request,re.I):
+                    raise ValueError('Opening requires an explicit request in the current user turn')
+                if name == 'open_app':
+                    app = args.get('app')
+                    if app not in self.apps:
+                        raise ValueError('Unsupported app')
+                    self._launch_target(self.apps[app])
+                    return {'status':'launch_requested','app':app,'target':str(self.apps[app]),'verified_open':False}
+                path = Path(str(args.get('path',''))).resolve()
+                allowed={'.txt','.md','.pdf','.png','.jpg','.jpeg','.webp','.wav','.mp3','.mp4','.docx','.xlsx','.pptx'}
+                if not self._safe(path) or not path.is_file() or path.suffix.casefold() not in allowed:
+                    raise ValueError('Only existing permitted documents inside configured folders can be opened')
+                self.launcher(str(path))
+                return {'status':'launch_requested','path':str(path),'verified_open':False}
+            raise ValueError('Unknown tool')
+        except (OSError,ValueError,TypeError) as error:
+            return {'status':'unavailable','reason':str(error)}
+
+    def close(self):
+        if self.browser_media is not None:
+            self.browser_media.close()
+
+    def _safe(self, path):
+        path=path.resolve()
+        if not any(path.is_relative_to(root) for root in self.roots):
+            return False
+        return not any(part.casefold() in {'.git','.venv','.tools','.env','runtime','memory'} or
+                       part.casefold().startswith('.env.') for part in path.parts)
+
+    def _discover_apps(self):
+        """Expose installed user-facing apps without granting arbitrary path execution."""
+        folders = [Path(os.environ.get('ProgramFiles', r'C:\Program Files')),
+                    Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')),
+                    Path(os.environ.get('LOCALAPPDATA', r'C:\Users\Default\AppData\Local'))]
+        apps = {}
+        blocked = {'uninstall', 'unins', 'update', 'updater', 'crashpad', 'helper',
+                   'service', 'setup', 'install', 'maintenanceservice', 'bash',
+                   'cmd', 'command', 'conhost', 'git', 'node', 'npm', 'pwsh',
+                   'powershell', 'python', 'pythonw', 'terminal', 'wt', 'wsl'}
+        shortcut_folders = [
+            Path(os.environ.get('PROGRAMDATA', r'C:\ProgramData')) /
+                'Microsoft/Windows/Start Menu/Programs',
+            Path(os.environ.get('APPDATA', r'C:\Users\Default\AppData\Roaming')) /
+                'Microsoft/Windows/Start Menu/Programs',
+        ]
+        for folder in shortcut_folders:
+            if not folder.is_dir():
+                continue
+            try:
+                candidates = folder.rglob('*.lnk')
+            except OSError:
+                continue
+            for path in candidates:
+                name = path.stem.casefold()
+                if any(part in name for part in blocked):
+                    continue
+                key = re.sub(r'[^a-z0-9]+', '_', name).strip('_')
+                if key and key not in apps:
+                    apps[key] = path
+        for folder in folders:
+            if not folder.is_dir():
+                continue
+            try:
+                candidates = folder.glob('*/*/*.exe')
+            except OSError:
+                continue
+            for path in candidates:
+                name = path.stem.casefold()
+                if any(part in name for part in blocked):
+                    continue
+                key = re.sub(r'[^a-z0-9]+', '_', path.stem.casefold()).strip('_')
+                if key and key not in apps:
+                    apps[key] = path
+        return apps
+
+    def _browser_aliases(self):
+        brave = Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / \
+            'BraveSoftware/Brave-Browser/Application/brave.exe'
+        if brave.is_file():
+            self.apps['brave'] = brave
+            return {'browser': brave}
+        for name in ('chrome', 'msedge', 'edge', 'firefox', 'brave', 'opera'):
+            if name in self.apps:
+                target = self.apps[name]
+                if name == 'brave' and str(target).lower().endswith('.lnk'):
+                    known = Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / \
+                        'BraveSoftware/Brave-Browser/Application/brave.exe'
+                    if known.is_file():
+                        self.apps[name] = known
+                        target = known
+                return {'browser': target}
+        return {}
+
+    def _load_windows_app_catalog(self):
+        """Reuse ODD's local Windows app catalog when present; never execute unknown targets."""
+        catalog = Path(os.environ.get('LOCALAPPDATA', '')) / 'ODD/apps_cache.json'
+        if not catalog.is_file():
+            return {}
+        try:
+            rows = json.loads(catalog.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            return {}
+        apps = {}
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 2:
+                continue
+            display, target = str(row[0]).strip(), str(row[1]).strip()
+            key = re.sub(r'[^a-z0-9]+', '_', display.casefold()).strip('_')
+            if not key or key in apps or not self._catalog_target_allowed(target):
+                continue
+            apps[key] = target
+        return apps
+
+    @staticmethod
+    def _catalog_target_allowed(target):
+        if target.startswith(('ms-settings:', 'shell:')):
+            return True
+        if re.fullmatch(r'[A-Za-z0-9_.-]+![A-Za-z0-9_.-]+', target):
+            return True
+        if target.lower().endswith(('.exe', '.lnk', '.url')):
+            return Path(target).is_file()
+        if re.fullmatch(r'[A-Za-z0-9_.-]+', target):
+            return True
+        return False
+
+    def _launch_target(self, target):
+        target = str(target)
+        if target.startswith('shell:') or '!' in target and not Path(target).is_file():
+            os.startfile('shell:AppsFolder\\' + target.removeprefix('shell:AppsFolder\\'))
+        elif target.startswith('ms-settings:'):
+            os.startfile(target)
+        elif Path(target).is_file() or target.lower().endswith(('.lnk', '.url')):
+            self.launcher(target)
+        else:
+            try:
+                self.launcher(target)
+            except OSError:
+                os.startfile('shell:AppsFolder\\' + target)

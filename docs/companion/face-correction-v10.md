@@ -1,0 +1,19 @@
+# Face correction, 2026-10-20
+
+The user rejected the v9 talking face as changed and hard to see. The identity reference is `assets/mother/artwork/mother-likeness-v6.png`, particularly its large left-hand portrait. The v9 sheet is only a hand-pose reference, not a face reference.
+
+The v10 derivative is a 4x2 sheet of waist-up conversational poses. It gives the face more pixels in the same desktop window while keeping both hands visible. The approved full-body idle reference is preserved. Active conversation keeps the portrait framing while listening, thinking and speaking, so it does not jump between body scales after every sentence. Outside a conversation, idle/walking retain their existing composition. This deliberate change of framing is visible at voice-session start/end and during one-shot spoken greetings.
+
+The loader prefers `mother-conversation-v10.png` when available and retains v9 as a fallback. Talking frames use Lanczos downsampling rather than nearest-neighbor so fine facial features survive resizing better. The audio envelope, approved candidate 8 Malayalam voice, pace 1.18 and original approved audio are unchanged.
+
+Generation uses the built-in image tool, with two images: v6 as the only identity source and v9 for poses only. Identity fidelity is a visual judgment for the user; generated facial animation is not guaranteed to retain exact source pixels. The original source is never overwritten.
+
+## Generation prompt
+
+Edit the talking character to FIX IDENTITY DRIFT. Image 1 is the ONLY authoritative identity; match the large close-up face on the LEFT of image1 precisely. Image2 provides hand poses ONLY: its face is WRONG, do not use that face. Create an 8-frame character animation sprite sheet in a strict regular 4-column x 2-row grid. IMPORTANT COMPOSITION CHANGE: every frame is a LARGE WAIST-UP portrait, from top of hair to just below both hands/hips, NOT full-body, no legs or feet. Face should be large, sharp and readable. Preserve the exact original woman's broad oval face and cheek fullness, original mature age, slightly asymmetric warm eyes and lids, original thick eyebrows, broad nose with original nostril shape, natural mouth width and chin shape, original skin tone, small red bindi, hairline pulled back and gold earrings. Do NOT slim her cheeks, beautify, de-age, enlarge eyes, narrow nose, or redesign her face. Match image1's softly illustrated realistic texture, not a generic generated woman. Green sari, blouse and jewelry exactly image1. Each equal cell contains the same woman at identical waist-up scale and same face center, clear transparent gutters and transparent background. Front facing head in all frames, fixed facial proportions. Columns: 1 her reference closed relaxed lips; 2 her own lips only slightly parted; 3 her own mouth naturally open for aa, without changing the nose/eyes/jaw identity; 4 gently rounded lips for o, no caricature. Top row hand pose: left hand near waist and right forearm forward with relaxed small gesture. Bottom row: right palm open and raised to chest height, left hand at waist, both hands clearly visible. Everything above the mouth should be almost identical between mouth variants, and all faces must unmistakably match the large close-up in image1. No labels, captions, scenery, outlines around cells, background glows, or shadows outside character. Use all the available canvas so the faces are larger and more detailed than the old full-body sheet. Exact equal 4x2 grid for automatic slicing.
+
+## Review artifacts
+
+Saved asset: `assets/mother/artwork/mother-conversation-v10.png`.
+
+Run `python tools/render_talking_preview.py --version v10`. Outputs are in `docs/previews/talking-v10/`; the MP4 reuses the exact approved Malayalam sample and is an offline rendered preview, not a recording of the running desktop window. The local review page is under `assets/mother/voice/experiments/talking-face-v10-2026-10-20/listen.html`.

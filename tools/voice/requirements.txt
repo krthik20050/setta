@@ -1,0 +1,7 @@
+# Optional local voice-reference screening; FFmpeg must also be on PATH.
+numpy
+scipy
+faster-whisper
+yt-dlp
+httpx
+python-dotenv

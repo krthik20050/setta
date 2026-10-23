@@ -1,0 +1,11 @@
+{
+  "stt_model": "saaras:v3",
+  "chat_model": "sarvam-105b-conversations",
+  "voices": {
+    "ml-IN": {"voice_id": ""},
+    "malayalam_mixed": {"voice_id": ""},
+    "en-IN": {"voice_id": ""},
+    "hi-IN": {"voice_id": ""}
+  },
+  "note": "Copy to voice.json and supply your own authorized Sarvam cloned voice IDs. Never share private voice recordings without consent."
+}
