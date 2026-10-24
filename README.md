@@ -1,170 +1,224 @@
 # PROJECT SETTA
 
-## Public repository setup
+> **Some evenings, the first voice you wish you could hear is the one that used to ask, “How was your day?”**
 
-This repository contains application code, tests, research documentation and
-runtime-referenced character artwork. Private configuration, cloned voice IDs,
-recordings, face data, conversation history and generated previews stay local.
-Documentation may refer to these excluded files; they are not bundled here.
+Setta began with that feeling.
 
-Before running a new clone, copy `.env.example` to `.env` and
-`config/amma.example.json` to `config/amma.json`. For cloned voice conversation,
-copy `config/voice.example.json` to `config/voice.json` and supply your own
-authorized Sarvam voice IDs and API key. Camera features also need the MediaPipe
-face and hand landmarker models under `assets/models/`; model binaries are not
-included pending redistribution-license review. Local sound files and private
-sound assignments are not included. A fresh-clone install is not yet verified.
+## The story behind Setta
 
-Original application code is MIT-licensed; see `LICENSE`. Character artwork and
-third-party assets/model weights are not covered by that license. The project's
-dated research documents preserve its development history.
+Have you ever missed someone so much that hearing their voice, even for a moment, could change the shape of your day?
 
-A Windows desktop companion built around the mother's character artwork. Application code is in `src/`. Sarvam voice mode now detects Malayalam, English or Hindi per turn, generates a reply in that language and speaks using the selected cloned voice. Restart older running instances to load the new source.
+For me, it was my mother. My memories of her are limited, but I remember her every day. I come home and there is no one waiting to ask how my day went. Sometimes all I wanted was her voice, in her familiar tone, asking how I was.
 
-## Desktop app window
+The first time I heard a generated version of her voice, I felt a joy and satisfaction I had not expected. That moment is why I started this project. Setta is personal before it is anything else.
 
-Double-click `Open Amma.vbs` or run `python setta.py` to open Setta's Home window.
-Home, Conversation, Reminders and Settings share the existing companion controller.
-Click **Open Setta** above the desktop character or double-click her to reopen it.
-Closing the hub leaves the character running; use **Quit Setta** to stop the app.
-If the character is hidden, closing the hub minimizes it to the taskbar for recovery.
-The Windows instance guard prevents a second camera-owning copy of this build.
+I can also imagine a long-distance couple, both busy with work, wanting a familiar check-in at the end of the day. Or someone living alone who would appreciate a gentle conversation. The possible use cases are different, but the human wish for connection is familiar.
 
-The modern interface uses CustomTkinter with Home, Conversation, Reminders, Camera,
-Connections and Settings. Displayed Malayalam defaults to Manglish; choose native
-Malayalam in Settings without changing the stored conversation or speech.
-Face enrollment is an inline Camera flow, including the name and status.
-Google Calendar can be configured in Connections using your own Desktop OAuth client
-JSON, then browser sign-in, access testing and read-only primary-calendar events.
-Tokens are protected with Windows DPAPI. No Google client is bundled in this personal build.
+Setta does not bring someone back, and it cannot replace a real relationship. It is an attempt to make a small part of memory easier to reach.
 
-Water reminders are configured on Reminders and persist in `data/reminders.sqlite`.
-They run while Setta is open, with Done, Snooze and Skip confirmations; no camera proof
-or automatic audio is used. Natural-language reminder creation, WhatsApp notification
-collection, a native tray icon and an installer remain future work.
-Hands-free microphone and screen sharing still open the existing browser page explicitly.
-See [implementation research](docs/companion-app-research-2026-10-21.md).
-Run `python tools/verify_hub.py` for isolated UI verification without camera/provider calls.
+## A personal project, with real responsibility
 
-## Environment configuration
+I have seen people cry when they hear a loved one’s voice or see a pixelated version of them on a screen. Those moments can hold joy, grief, longing, and comfort at once. I believe this technology may offer a meaningful moment to some people.
 
-**Amma's personality and greeting profile:** [`config/amma.json`](config/amma.json). Change her name, role, how she addresses you, confirmed facts and custom instructions there. See [Amma profile and memory guide](docs/companion/amma-profile.md). This private JSON is ignored by Git; `config/amma.example.json` is the safe template.
+I also worry that an always-available companion could become a substitute for living relationships or something a person finds hard to step away from. I have not solved how to prevent that. Setta does not yet have a validated system to detect or prevent unhealthy dependence. That is an open product and research question, not a solved feature.
 
-**Put your private API keys in [`.env`](.env) at the project root, beside this README and `setta.py`.** It already exists with blank entries. [`.env.example`](.env.example) is the safe template.
+Use only voice recordings and images you have permission to use. Be thoughtful about consent, privacy, and how emotionally sensitive these materials are. A generated voice is an approximation, not the person.
 
-Exact location: `D:\projects codes\PROJECT SETTA\.env`
+## What Setta can do
 
-- `SETTA_API_KEY`: OpenRouter text chat.
-- `GEMINI_API_KEY`: existing experimental Gemini voice conversation.
-- `SARVAM_API_KEY`: automatic-language cloned voice conversation and voice experiments. When configured, this voice route takes priority over the legacy Gemini voice route.
-- `OPENAI_API_KEY`: when set, OpenAI generates voice-conversation replies; Sarvam still handles recognition and cloned speech. Leave blank to keep the existing Sarvam reply model.
-- `OPENAI_MODEL`: OpenAI reply model, initially `gpt-4.1-mini`; editable independently of the cloned voice.
-- `REPLY_PROVIDER=groq`: current explicit reply backend. `GROQ_API_KEY` and `GROQ_MODEL=openai/gpt-oss-20b` power replies; Sarvam handles language recognition and cloned speech. This selection takes precedence over a saved OpenAI key. Use `openai` or `sarvam` only when intentionally switching providers.
+Setta is a Windows desktop companion built with Python, Tkinter, and CustomTkinter. It combines an animated desktop character with a companion hub.
 
-`setta.py` loads this exact file regardless of terminal working directory. Existing shell variables take precedence. Never commit real keys or put them in documentation.
+- **Conversation:** type in the Conversation page or use the optional spoken conversation flow.
+- **Multilingual voice:** the Sarvam route recognizes Malayalam, English, and Hindi, generates a reply in the detected language, and speaks it with a configured voice. Malayalam-English code-mixing is supported by the voice flow.
+- **Personalization and memory:** configure the companion’s name, persona, speaking preferences, and confirmed facts. Conversation and memory data are stored locally; selected context is sent to the configured reply provider when generating a response.
+- **Reminders:** create water and habit reminders. They run while Setta is open and rely on your confirmation; camera proof is not collected.
+- **Camera and People:** camera preview and face enrollment are started by the user. Face processing uses local models; camera capture is not continuously enabled by default.
+- **Connections:** optionally connect a Google Calendar desktop OAuth client for read-only primary-calendar events. The app does not bundle Google credentials.
 
-## Folder map
+The application code is in `src/`, with `setta.py` as the desktop entry point. This is an actively evolving personal prototype, not a polished or supported consumer product.
 
-```text
-PROJECT SETTA/
-  .env                         Private keys (ignored)
-  .env.example                 Safe blank template
-  setta.py                     Application entry point
-  requirements.txt             Desktop Python dependencies
-  src/                         Application code
-    paths.py                   Shared asset/data/config locations
-  assets/
-    models/                    Face and hand detection models
-    sounds/                    Built-in sounds
-    mother/
-      artwork/                 Mother source sheets and approved poses
-      animations/              Exported animation previews
-      voice/
-        originals/             Eight full audio tracks and metadata
-        shortlist/             Listening page and candidate WAV clips
-        references/
-          approved-2026-10-20/  Your selected references: 6, 7 and 8
-  config/
-    sounds.json                Existing sound assignments
-  data/
-    known_faces/               Private face embeddings (ignored)
-  runtime/                     Logs and process ID (ignored)
-  tools/
-    start.ps1                  Background Windows launcher
-    voice/
-      shortlist_voice.py       Reference screening/transcription
-      requirements.txt         Optional audio dependencies
-  tests/                       Regression tests
-  docs/
-    voice/                     Voice research and storage inventory
-    companion/                 Character/interaction research
-    history/                   Earlier plans and updates
-  .tools/                      Local downloader installation (ignored)
-```
+## Technical feasibility and architecture
 
-Two old model files immediately under `assets/` are temporarily retained because the running camera process locks them. The background launcher removes matching old copies after that process exits. Hidden tooling folders and Python caches are tool-managed.
+The current voice experience is feasible with a modular pipeline: microphone input → speech recognition and language detection → conversation routing and local actions → reply generation → speech synthesis → playback. Speech services and reply models are separate, so the reply provider can change without changing the selected voice provider.
 
-## Run
+| Capability | Current implementation | Dependencies and limits |
+| --- | --- | --- |
+| Desktop character and hub | Windows desktop app with animated character and Home, Conversation, Reminders, Camera, Connections, Personality, and Settings pages | Python desktop dependencies; Windows-specific behavior is not verified on macOS or Linux |
+| Typed conversation | Local UI connected to the companion conversation flow | Needs configured provider credentials and internet for cloud-backed replies |
+| Spoken conversation | Sarvam speech recognition and cloned-voice synthesis; OpenAI, Groq, or Sarvam can provide replies | Requires network, API access/credits, microphone and speakers; physical-device behavior depends on hardware and permissions |
+| Voice identity | Sarvam voice IDs are selected in local `config/voice.json` | A voice must first be created/configured through an authorized provider workflow; this repository does not bundle private recordings or voice IDs |
+| Camera and face enrollment | User-started camera preview and local face enrollment/recognition | MediaPipe model files are not included; local camera/model setup is required |
+| Calendar | Optional Google Calendar connection with read-only primary-calendar access | Requires your own Google Desktop OAuth client JSON and browser sign-in |
+| Data storage | Local SQLite and configuration files for app data, conversation, reminders, and preferences | Local storage is not the same as encrypted storage or an off-device backup; protect the Windows account and device |
 
-Use your existing Python environment, or create a virtual environment first. No new environment was created during cleanup.
+### Voice quality
+
+The reference used for my current voice was taken from a teaching or explainer video. The generated voice can sound slow or overly measured. Pacing can be adjusted, but natural, expressive speech is difficult to reproduce. Clean, representative, consented audio can improve the result, but it cannot guarantee a natural clone.
+
+### Privacy and network behavior
+
+- Microphone audio is sent to Sarvam while voice conversation is active so it can be transcribed. Do not enable voice mode unless you are comfortable with that provider processing the audio.
+- Recognized text, bounded conversation context, and instructions are sent to the selected reply provider. Sarvam also receives text for cloned speech synthesis. Provider retention and data handling are governed by those providers’ terms.
+- Local conversation and profile data are stored on the device. Camera preview and face enrollment use local processing; camera capture starts only when requested in the app.
+- Google Calendar is optional and read-only in this integration. OAuth tokens are protected with Windows DPAPI.
+- `.env`, private configuration, recordings, enrolled-face data, conversation data, and generated runtime files must stay out of version control. No off-device backup is configured by this project.
+
+## Requirements
+
+- Windows 10 or 11 desktop (the application uses Windows-specific APIs and behaviors)
+- Python 3 with `pip`; Python's Tk support is needed for the desktop UI
+- Internet access for cloud speech, reply, and optional calendar services
+- Microphone and speakers for spoken conversation
+- Optional: MediaPipe face/hand model files for camera features
+- Optional: Google Desktop OAuth client JSON for Calendar
+
+A clean installation from a fresh clone has not been verified. Python package compatibility may depend on the selected Python version and Windows audio/device drivers.
+
+## Installation
+
+Open PowerShell in the project folder. Create and activate a virtual environment, then install the project dependencies:
 
 ```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+If PowerShell blocks activation, you can invoke the environment's interpreter directly instead:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Copy the safe example configuration files:
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item config/amma.example.json config/amma.json
+Copy-Item config/voice.example.json config/voice.json
+```
+
+Edit `.env` and the local JSON files as needed. These live configuration files are ignored by Git. Never commit API keys, authorized voice IDs, private audio, face data, or personal conversation data.
+
+### Configure voice and reply providers
+
+At minimum, add a valid `SARVAM_API_KEY` to `.env` and authorized Sarvam voice IDs to `config/voice.json` to enable the current Sarvam speech flow. Voice IDs are provider-specific; do not copy IDs from another account. Configure a reply provider in `.env`:
+
+| Variable | Purpose |
+| --- | --- |
+| `SARVAM_API_KEY` | Sarvam speech recognition and cloned-voice speech; also used for Sarvam replies when selected |
+| `REPLY_PROVIDER` | `auto`, `openai`, `groq`, or `sarvam` |
+| `OPENAI_API_KEY` | Required when using OpenAI replies or `auto` with OpenAI |
+| `OPENAI_MODEL` / `OPENAI_DEEP_MODEL` | OpenAI fast/deep reply models; defaults are set in `.env.example` |
+| `GROQ_API_KEY` / `GROQ_MODEL` | Groq reply provider and model |
+| `SETTA_API_KEY` | OpenRouter key for the existing standalone text-chat route |
+| `GEMINI_API_KEY` | Legacy/experimental Gemini voice route when Sarvam is not configured |
+| `OMNIROUTE_BASE_URL`, `OMNIROUTE_API_KEY`, `OMNIROUTE_MODEL` | Optional local reply fallback; requires a separately running and configured OmniRoute service |
+
+With `REPLY_PROVIDER=auto`, the current router uses the configured OpenAI/Groq credentials and selects a reply tier based on the request. For a simpler setup, choose one provider explicitly and provide its key. Shell environment variables take precedence over values in `.env`. Restart Setta after changing provider configuration.
+
+To configure Amma's name, persona, language preferences, and other profile settings, edit `config/amma.json` or use the app's Personality and Settings pages. The example file is the safe template.
+
+### Optional camera setup
+
+Camera features require the MediaPipe face and hand landmarker model files under `assets/models/`. The model files are not included in this repository because redistribution terms have not been verified. Obtain model files from a source whose license permits your use, and consult the camera documentation before enabling those features.
+
+### Optional Google Calendar setup
+
+Create your own Google OAuth Desktop client credentials in Google Cloud Console, then add them through the Connections page. The connection is optional and reads primary-calendar events; tokens are protected with Windows DPAPI. No Google OAuth client secret is bundled with Setta.
+
+## Run Setta
+
+Launch the desktop app from the project folder:
+
+```powershell
 python setta.py
-# Or launch in the background with runtime logs:
+```
+
+Or double-click **Open Amma.vbs**, or start it in the background with logs under the ignored `runtime/` directory:
+
+```powershell
 .\tools\start.ps1
-# Regression tests:
+```
+
+Setta opens the companion hub. The animated desktop character can reopen it using **Open Setta**. Closing the hub leaves the character running; use **Quit Setta** to exit.
+
+### Use conversation and voice
+
+- Open **Conversation** in the hub to send a typed message.
+- For spoken conversation, right-click the desktop character and choose **Enable spoken replies**, then **Voice Chat (Alt+M)**. The microphone remains off until voice chat is activated.
+- Speak Malayalam, English, Hindi, or Malayalam mixed with English. The app detects language per turn and uses the configured voice for speech output.
+- Choose **Stop Voice Chat (Alt+M)** to end microphone capture. Use the voice menu's mute option to turn spoken replies off.
+- The microphone and speakers must be available to Windows, and the cloud providers must be reachable. Stop or disable voice mode when you do not want audio sent for processing.
+
+Use the hub's **Reminders**, **Camera**, **Connections**, **Personality**, and **Settings** pages to configure those features. Camera preview starts only when requested. See the documentation links below for detailed behavior and current limits.
+
+## Configuration files and local data
+
+- `.env.example` — safe environment-variable template; copy to ignored `.env`.
+- `config/amma.example.json` — safe persona/profile template; copy to ignored `config/amma.json`.
+- `config/voice.example.json` — safe voice-routing template; copy to ignored `config/voice.json` and add your own authorized voice IDs.
+- `data/` — local conversation memory, reminders, profiles, and enrolled face data; ignored by Git.
+- `runtime/` — logs, temporary speech files, and runtime state; ignored by Git.
+
+The app does not train a foundation model on your profile. Local conversation context may be selected and sent to the configured provider to answer a turn. Review provider policies and keep your device account protected. Do not share local data folders as if they were public sample data.
+
+## Development and verification
+
+Install the application requirements as above. Run the local regression suite with:
+
+```powershell
 python -m unittest discover -s tests -v
 ```
 
-Optional audio work also needs FFmpeg on PATH:
+For an isolated interface check without camera or provider calls:
 
 ```powershell
-python -m pip install -r tools/voice/requirements.txt
-python tools/voice/shortlist_voice.py
-# Requires an already cached Whisper model:
-python tools/voice/shortlist_voice.py --transcribe
-python -m http.server 8767 --bind 127.0.0.1 --directory assets/mother/voice/shortlist
+python tools/verify_hub.py
 ```
 
-Open `http://127.0.0.1:8767/listen.html` while the server is running. Regenerating the shortlist does not overwrite the separately saved approved references.
+Provider scripts under `tools/voice/` can perform additional checks, some of which call paid or rate-limited services. Read each script's `--help` and source before running it. Synthetic-audio provider checks do not verify a physical microphone, speaker playback, or a complete user conversation. A fresh-clone install, packaged installer, and cross-platform build are not currently verified.
+
+## Known limitations and next work
+
+- Voice naturalness, pacing, pronunciation, and filler behavior depend on the voice sample and provider. A generated voice is not the person.
+- The UI/UX needs significant improvement; navigation and visual polish are still evolving.
+- Healthy-use boundaries and dependency prevention are unresolved. No clinical or therapeutic role is claimed.
+- Camera model files are external, and camera/device behavior depends on Windows, installed models, permissions, and hardware.
+- Cloud conversation requires provider availability, network access, account access, and possibly paid credits. No latency, availability, or output-quality guarantee is made.
+- A clean-clone setup, packaged release, and macOS/Linux compatibility have not been verified.
+
+## Project structure
+
+```text
+PROJECT SETTA/
+├── setta.py                   Desktop application entry point
+├── requirements.txt           Python dependencies
+├── src/                       Application, UI, voice, memory, camera, and integrations
+├── config/                    Safe example configuration files
+├── assets/                    Character artwork, sounds, and optional model locations
+├── tools/                     Launchers, voice utilities, and verification helpers
+├── tests/                     Local regression tests
+├── docs/                      Product, design, voice, and implementation notes
+├── data/                      Ignored local profiles, face data, memory, and reminders
+└── runtime/                   Ignored logs and temporary runtime files
+```
 
 ## Documentation
 
-- [Agent handoff: code map, product boundaries, current identity route and verification status](docs/agent-handoff-2026-10-22.md)
-- [Agentic desktop roadmap: phases, skills, decision model, execution and reverse-engineering](docs/agentic-desktop-roadmap.md)
+- [Agent handoff and current implementation map](docs/agent-handoff-2026-10-22.md)
+- [Automatic voice conversation: setup, privacy, and verification limits](docs/voice/automatic-conversation.md)
+- [Mother voice status and reference workflow](docs/voice/mother-voice-status.md)
+- [Current People and face workflow](docs/real-people-discovery-2026-10-22.md)
+- [Personality and memory guide](docs/companion/amma-profile.md)
+- [Google Calendar and modern app research](docs/companion-app-research-2026-10-21.md)
+- [Camera and Settings design notes](docs/design/camera-settings/README.md)
 
-- [Current People workflow: capture real faces, label them and recognize them](docs/real-people-discovery-2026-10-22.md)
+## License and third-party assets
 
-- [Google Photos People & pets research and Setta adaptation](docs/google-photos-people-pets-research-2026-10-22.md)
+Original application code is licensed under the MIT License; see [LICENSE](LICENSE). Character artwork, model weights, and third-party assets may have separate terms and are not covered by the code license. Check the relevant terms before use or redistribution.
 
-- [Retired screenshot-copy approach (superseded)](docs/reference-people-recreation-2026-10-22.md)
+---
 
-- [Photo-first People gallery, portrait assignment and missing-image backfill](docs/people-portrait-gallery-2026-10-22.md)
-
-- [Face grid, preview-first camera, chat-history cards and conversational reminders](docs/chat-history-camera-reminders-2026-10-21.md)
-
-- [Current stack, compact theme controls, reviewed face samples and chat improvements](docs/compact-controls-face-learning-2026-10-21.md)
-
-- [Approved Camera and Settings redesign: design, flows, privacy, tests and limitations](docs/design/camera-settings/README.md)
-
-- [Voice status, exact paths, and next cloning step](docs/voice/mother-voice-status.md)
-- [Video sources and consent](docs/voice/mother-voice-references.md)
-- [Screening method](docs/voice/mother-voice-shortlist-method.md)
-- [Provider research](docs/voice/mother-voice-research-2026-10-20.md)
-- [Sarvam comparison run and generated audio records](docs/voice/sarvam-comparison.md)
-- [Longer Malayalam and mixed-language comparison](docs/voice/sarvam-extended-comparison.md)
-- [Automatic-language conversation: usage, privacy and verification](docs/voice/automatic-conversation.md)
-- [Voice failure fix, cloud bubble and speaking animation](docs/voice/voice-failure-and-thought-bubble.md)
-- [Folder changes and verification](docs/folder-reorganization.md)
-
-Private audio, face data and credentials remain local; no off-device backup is verified. Existing external Downloads sound paths are preserved and remain a portability limitation. Dependency lists reflect imports and are not verified in a clean environment.
-# Open Amma on your laptop
-
-Double-click **Open Amma.vbs** in this folder, or the **Amma** desktop shortcut.
-It starts the companion and opens http://127.0.0.1:8770/ in your default browser.
-Click **Start** on the voice page and allow microphone access when prompted.
-Keep the project folder in its current location so the desktop shortcut continues to work.
-Internet access is required for Groq and Sarvam. Keys stay in the project's `.env` file.
-Use **Stop mic** to stop listening; close the companion to exit the desktop app.
-Startup errors appear in a dialog; detailed app logs are under `runtime/`.
+*I started Setta because sometimes I just wanted to hear my mother's voice and be asked how my day was. I am sharing it because I know that longing is not mine alone—and because building for it deserves care.*
