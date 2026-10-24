@@ -9,12 +9,12 @@ def select_media_service(text: str, available_apps=None) -> str | None:
     """Choose a media service from explicit signals, task type and availability."""
     value = text.casefold()
     apps = set(available_apps or ())
-    wants_youtube = bool(re.search(r'\b(?:youtube|music video|video)\b', value))
+    wants_youtube = bool(re.search(r'\b(?:you\s*tube|u\s*tube|utube|music video|video)\b', value))
     wants_spotify = bool(re.search(r'\bspotify\b', value))
     if wants_youtube and not wants_spotify:
-        return 'youtube' if 'brave' in apps or not apps else None
+        return 'youtube'
     if wants_spotify:
-        return 'spotify' if 'spotify' in apps or not apps else None
+        return 'spotify'
     # Audio-only requests are best handled by a music app; prefer Spotify.
     if 'spotify' in apps:
         return 'spotify'
@@ -27,9 +27,9 @@ def plan_request(text: str, available_apps=None) -> TaskPlan | None:
     value = text.strip()
     if not re.search(r'\b(?:play|put on|listen to)\b', value, re.I):
         return None
-    if not re.search(r'\b(?:youtube|spotify|music|song|playlist)\b', value, re.I):
+    if not re.search(r'\b(?:you\s*tube|u\s*tube|utube|spotify|music|song|playlist)\b', value, re.I):
         return None
-    match = re.search(r'\b(?:play|put on|listen to)\s+(.+?)(?:\s+on\s+(?:youtube|spotify|brave)|$)', value, re.I)
+    match = re.search(r'\b(?:play|put on|listen to)\s+(.+?)(?:\s+on\s+(?:you\s*tube|u\s*tube|utube|spotify|brave)|$)', value, re.I)
     query = match.group(1).strip(' .,!?') if match else 'music'
     query = re.sub(r'^(?:some|a|the)\s+', '', query, flags=re.I).strip() or 'music'
     service = select_media_service(value, available_apps)

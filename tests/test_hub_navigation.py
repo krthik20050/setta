@@ -44,7 +44,7 @@ class NavigationTests(unittest.TestCase):
                 while not app._live_conversation.memory.facts() and time.monotonic()<deadline:
                     root.update(); time.sleep(.02)
                 self.assertEqual(app._live_conversation.memory.facts()[0]['value'],'Physics')
-                routes = ['Home', 'Conversation', 'Reminders', 'Camera', 'Connections', 'Profile & Memory', 'Settings']
+                routes = ['Home', 'Conversation', 'Reminders', 'Camera', 'Connections', 'Personality', 'Profile & Memory', 'Settings']
                 for selected in ['Conversation', *routes, 'Conversation', *reversed(routes)]:
                     with self.subTest(page=selected):
                         hub.nav[selected].invoke()
@@ -56,6 +56,9 @@ class NavigationTests(unittest.TestCase):
                                           if page.winfo_viewable()], [selected])
                         self.assertTrue(hub.pages[selected].winfo_width() > 200)
                         self.assertTrue(hub.pages[selected].winfo_height() > 100)
+                        if selected == 'Personality':
+                            self.assertTrue(hub.personality_card.winfo_viewable())
+                            self.assertLess(hub.personality_card.winfo_y(), 150)
             finally:
                 if hub:
                     hub.close()

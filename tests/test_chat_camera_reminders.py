@@ -82,3 +82,8 @@ class ChatCameraReminderTests(unittest.TestCase):
         client.profile.data['permissions']['camera']=False
         client.reply(RecognizedTurn('open the camera','en-IN',None,False))
         client.camera_request.assert_called_once()
+
+    def test_camera_affirmative_only_confirms_a_current_pending_action(self):
+        client=self.client(); client.camera_request=Mock()
+        client.reply(RecognizedTurn('yes','en-IN',None,False))
+        client.camera_request.assert_not_called()

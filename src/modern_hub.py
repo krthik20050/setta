@@ -2,6 +2,7 @@
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import io
+import json
 import queue
 import threading
 import time
@@ -81,7 +82,8 @@ class ModernHub:
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
         for name, symbol in [('Home', '⌂'), ('Conversation', '◌'), ('Reminders', '◷'),
-                             ('Camera', '◎'), ('Connections', '⇄'), ('Profile & Memory','◇'), ('Settings', '⚙')]:
+                             ('Camera', '◎'), ('Connections', '⇄'), ('Personality', '♡'),
+                             ('Profile & Memory','◇'), ('Settings', '⚙')]:
             nav = ctk.CTkButton(self.sidebar, text=f"{symbol}    {'Chat history' if name == 'Conversation' else name}", anchor='w', height=44,
                 corner_radius=10, fg_color='transparent', text_color=MUTED, hover_color=SOFT,
                 font=('Segoe UI', 13), command=lambda n=name: self.show_page(n))
@@ -673,7 +675,8 @@ class ModernHub:
 
     def _camera(self):
         page = self.pages['Camera']
-        self.header(page, 'People & camera', 'Manage who Setta recognizes. Face references stay on this laptop.')
+        self.header(page, 'People & camera',
+            'Face references stay on this laptop. Study checks may send one camera still and the active YouTube title to Groq; Setta does not save the still.')
         columns = ctk.CTkFrame(page, fg_color='transparent')
         columns.pack(fill='x')
         columns.grid_columnconfigure((0, 1), weight=1, uniform='camera')
@@ -1157,6 +1160,11 @@ class ModernHub:
         main.grid(row=0, column=0, sticky='new')
         personality = self.pages['Profile & Memory']
         self.header(personality,'Profile & Memory','Her personality, permissions and what she remembers about you.')
+        self.personality_page = self.pages['Personality']
+        self.label(self.personality_page, 'Personality', 30, weight='bold').pack(anchor='w', pady=(5, 3))
+        self.label(self.personality_page, 'Shape how Setta talks with you. Changes apply to new replies.',
+                   15, MUTED, wraplength=760).pack(anchor='w', pady=(0, 20))
+        self._personality_preferences(self.personality_page)
         self.button(main,'Open Profile & Memory',lambda:self.show_page('Profile & Memory'),True).pack(anchor='w',pady=(0,15))
         appearance = ctk.CTkFrame(main, fg_color=SURFACE, corner_radius=12)
         appearance.pack(fill='x', pady=(0, 15))
@@ -1224,7 +1232,6 @@ class ModernHub:
         self.profile_save_button.pack(anchor='w', padx=24, pady=(0, 8))
         self.profile_status = tk.StringVar(value='Saved in config/amma.json. Provider keys and voice settings are preserved.')
         self.label(profile, '', 12, MUTED, textvariable=self.profile_status, wraplength=300).pack(anchor='w', padx=24, pady=(0, 20))
-
         backup = ctk.CTkFrame(profile, fg_color='transparent')
         backup.pack(fill='x', padx=24, pady=12)
         self.button(backup, 'Back up personality', self.export_personality, True).pack(anchor='w')
@@ -1236,6 +1243,151 @@ class ModernHub:
         self.button(self.profile_import_panel, 'Apply imported personality', self.apply_personality_import).pack(side='left', padx=12, pady=12)
         self.button(self.profile_import_panel, 'Cancel', lambda: self.profile_import_panel.pack_forget(), True).pack(side='left', pady=12)
         self._profile_controls(personality)
+
+    def _personality_preferences(self, page):
+        """Editable conversational defaults, separate from facts and chat memory."""
+        self.personality_layout = ctk.CTkFrame(page, fg_color='transparent')
+        self.personality_layout.pack(fill='x', pady=(0, 18))
+        self.personality_layout.grid_columnconfigure(0, weight=1)
+        self.personality_layout.grid_columnconfigure(1, weight=0)
+
+        settings = ctk.CTkFrame(self.personality_layout, fg_color='transparent')
+        settings.grid(row=0, column=0, sticky='nsew', padx=(0, 18))
+        self.personality_card = settings
+
+        current = self.app.character_profile.personalization()
+        self.personality_menus = {}
+        self.personality_choice_buttons = {}
+        menus = {
+            'reply_length': ('Reply length', 'How much detail should she usually include?',
+                             {'Brief': 'brief', 'Balanced': 'balanced', 'Detailed': 'detailed'}),
+            'advice_style': ('Advice style', 'Choose whether she checks in before offering advice.',
+                             {'Ask me first': 'ask_first', 'Practical advice': 'practical'}),
+            'humor': ('Humor', 'Set how often a little humor belongs in the conversation.',
+                      {'Off': 'off', 'Rarely': 'rare', 'Sometimes': 'occasional'}),
+            'follow_up': ('Follow-up questions', 'Choose how often she should ask a question back.',
+                          {'Only when useful': 'only_when_needed', 'More often': 'often'}),
+        }
+        self.personality_values = {}
+        for key, (title, description, choices) in menus.items():
+            card = self.card(settings)
+            card.pack(fill='x', pady=(0, 12))
+            self.label(card, title, 18, weight='bold').pack(anchor='w', padx=20, pady=(16, 2))
+            self.label(card, description, 14, MUTED, wraplength=480).pack(anchor='w', padx=20, pady=(0, 11))
+            selected = next(label for label, value in choices.items() if value == current[key])
+            control = tk.StringVar(value=selected)
+            self.personality_menus[key] = control
+            self.personality_values[key] = choices
+            choice_row = ctk.CTkFrame(card, fg_color='transparent')
+            choice_row.pack(fill='x', padx=20, pady=(0, 17))
+            self.personality_choice_buttons[key] = {}
+            for choice in choices:
+                button = ctk.CTkButton(
+                    choice_row,
+                    text=choice,
+                    height=46,
+                    corner_radius=9,
+                    border_width=1,
+                    border_color=LINE,
+                    fg_color=SURFACE,
+                    text_color=INK,
+                    hover_color=('#edf5ef', '#2b3931'),
+                    font=('Segoe UI', 14, 'bold'),
+                    command=lambda key=key, choice=choice: self._set_personality_choice(key, choice),
+                )
+                button.pack(side='left', fill='x', expand=True, padx=(0, 6))
+                self.personality_choice_buttons[key][choice] = button
+            self._style_personality_choices(key)
+
+        actions = ctk.CTkFrame(settings, fg_color='transparent')
+        actions.pack(fill='x', pady=(2, 0))
+        self.personality_save_button = self.button(
+            actions, 'Save preferences', self.save_personality_preferences, height=46)
+        self.personality_save_button.pack(side='left')
+        self.personality_status = tk.StringVar(
+            value='Saved on this device. Preferences are separate from memory facts.')
+        self.label(actions, '', 14, MUTED, textvariable=self.personality_status,
+                   wraplength=540, justify='left').pack(anchor='w', pady=(10, 0), fill='x')
+
+        self.personality_preview_card = self.card(self.personality_layout)
+        self.personality_preview_card.grid(row=0, column=1, sticky='new', pady=(0, 12))
+        self.label(self.personality_preview_card, 'LIVE PREVIEW', 12, GREEN, 'bold').pack(
+            anchor='w', padx=22, pady=(20, 8))
+        self.label(self.personality_preview_card, 'A sample reply with your current choices', 15,
+                   MUTED, wraplength=300).pack(anchor='w', padx=22, pady=(0, 14))
+        self.personality_preview_text = self.label(
+            self.personality_preview_card, '', 16, wraplength=300, justify='left')
+        self.personality_preview_text.pack(anchor='w', fill='x', padx=22, pady=(0, 20))
+        self._update_personality_preview()
+        self.personality_layout.bind('<Configure>', self._layout_personality_preview, add='+')
+
+    def _layout_personality_preview(self, event):
+        """Keep the preview beside the controls only when both columns stay readable."""
+        wide = event.width >= 920
+        if wide:
+            self.personality_layout.grid_columnconfigure(1, minsize=320)
+            self.personality_preview_card.grid(row=0, column=1, sticky='new', pady=(0, 12))
+        else:
+            self.personality_layout.grid_columnconfigure(1, minsize=0)
+            self.personality_preview_card.grid(row=1, column=0, sticky='ew', pady=(6, 12))
+
+    def _style_personality_choices(self, key):
+        selected = self.personality_menus[key].get()
+        for choice, button in self.personality_choice_buttons[key].items():
+            active = choice == selected
+            button.configure(
+                fg_color=('#177653', '#21744f') if active else SURFACE,
+                text_color='#ffffff' if active else INK,
+                border_color=('#177653', '#21744f') if active else LINE,
+                hover_color=('#0f5f42', '#286f4e') if active else ('#edf5ef', '#2b3931'),
+            )
+
+    def _set_personality_choice(self, key, choice):
+        if key not in self.personality_menus or choice not in self.personality_values[key]:
+            return
+        self.personality_menus[key].set(choice)
+        self._style_personality_choices(key)
+        self._update_personality_preview()
+
+    def _update_personality_preview(self):
+        if not hasattr(self, 'personality_preview_text'):
+            return
+        values = {key: self.personality_values[key][control.get()]
+                  for key, control in self.personality_menus.items()}
+        if values['advice_style'] == 'ask_first':
+            reply = 'That sounds like a lot to carry. Would you like me to listen, or help think through what to do?'
+        else:
+            reply = 'That sounds like a lot to carry. We can take it one step at a time. A small first step could make this feel more manageable.'
+        if values['reply_length'] == 'brief':
+            reply = 'I hear you. What feels most important right now?'
+        elif values['reply_length'] == 'detailed':
+            reply += ' We can look at the options together, choose one that feels realistic, and adjust as we go.'
+        if values['humor'] == 'occasional':
+            reply += ' And we can keep it human along the way.'
+        elif values['humor'] == 'rare':
+            reply += ' (And if it gets too heavy, we can find a small reason to smile.)'
+        if values['follow_up'] == 'often' and not reply.endswith('?'):
+            reply += ' What would help most right now?'
+        self.personality_preview_text.configure(text=reply)
+
+    def save_personality_preferences(self):
+        changes = {key: self.personality_values[key][control.get()]
+                   for key, control in self.personality_menus.items()}
+        self.personality_save_button.configure(state='disabled', text='Saving…')
+        def complete(profile, error):
+            self.personality_save_button.configure(state='normal', text='Save personality preferences')
+            if error:
+                self.personality_status.set(str(error) if isinstance(error, ValueError)
+                    else 'Could not save these preferences. Please try again.')
+                return
+            self.app.character_profile = profile
+            if self.app.voice_agent:
+                self.app.voice_agent.profile = profile
+            self.personality_status.set('Saved on this device. New replies will use these preferences.')
+        if not self._io.submit('personality_save', lambda: CharacterProfile.save_preferences(
+                changes, getattr(self.app, 'profile_path', None)), complete):
+            self.personality_save_button.configure(state='normal', text='Save personality preferences')
+            self.personality_status.set('A personality preference save is already in progress.')
 
     def _profile_controls(self,page):
         profile=self.app.character_profile
@@ -1260,6 +1412,12 @@ class ModernHub:
         for key,label in CharacterProfile.CAPABILITIES.items():
             variable=tk.BooleanVar(value=getattr(profile, 'allowed', lambda name: False)(key)); self.permission_vars[key]=variable
             ctk.CTkSwitch(controls,text=label,variable=variable,text_color=INK,progress_color=GREEN).pack(anchor='w',padx=24,pady=7)
+            if key == 'location':
+                self.label(controls,
+                    'Reads a fresh position only when you ask where you are. Nearby place names are matched offline with GeoNames; precise coordinates are not sent to a geocoding service or saved in chat memory. Windows will also ask for location permission.',
+                    13, MUTED, wraplength=280).pack(anchor='w', padx=24, pady=(0, 8))
+                self.button(controls, 'Open Windows location settings',
+                            self.open_windows_location_settings, True).pack(anchor='w', padx=24, pady=(0, 10))
         self.button(controls,'Save capabilities',self.save_capabilities).pack(anchor='w',padx=24,pady=16)
         self.capability_status=tk.StringVar(value='Permissions apply to the next action. Chat history is still saved when recall is disabled.')
         self.label(controls,'',12,MUTED,textvariable=self.capability_status,wraplength=280).pack(anchor='w',padx=24,pady=(0,18))
@@ -1291,12 +1449,17 @@ class ModernHub:
                 self.capability_status.set(str(error) if isinstance(error,ValueError) else 'Could not save capabilities.'); return
             self.app.character_profile=profile
             if self.app.voice_agent: self.app.voice_agent.profile=profile
+            if self.app._live_conversation: self.app._live_conversation.profile=profile
             if not profile.allowed('camera'): self.stop_camera()
             self.app.desktop_activity.settings['foreground_app']=bool(profile.data.get('context',{}).get('foreground_app',False) and profile.allowed('desktop_context'))
             if profile.allowed('desktop_context'): self.app.desktop_activity.start()
             else: self.app.desktop_activity.stop()
             self.capability_status.set('Saved. Enabled actions stay bounded; extra permissions are never granted by tone.')
         self._io.submit('capabilities',lambda:CharacterProfile.save_controls(values,tone,getattr(self.app,'profile_path',None),pace=pace,address=address),complete)
+
+    @staticmethod
+    def open_windows_location_settings():
+        webbrowser.open('ms-settings:privacy-location')
 
     def refresh_profile_memory(self):
         live=self.app._live_conversation
@@ -1360,7 +1523,9 @@ class ModernHub:
             self._import_fields = fields
             self.profile_import_preview.configure(state='normal')
             self.profile_import_preview.delete('1.0', 'end')
-            self.profile_import_preview.insert('end', 'Name: ' + fields['name'] + '\nRole: ' + fields['role'] + '\nInstructions: ' + fields['custom_instructions'])
+            self.profile_import_preview.insert('end', 'Name: ' + fields['name'] + '\nRole: ' + fields['role'] + '\nInstructions: ' + fields['custom_instructions']
+                + ('\nPersonality preferences: ' + json.dumps(fields['personalization'], ensure_ascii=False)
+                   if fields.get('personalization') else '\nPersonality preferences: current settings will be kept.'))
             self.profile_import_preview.configure(state='disabled')
             self.profile_import_panel.pack(fill='x', padx=24, pady=12)
             self.profile_status.set('Preview only. Apply to save, or cancel to keep your profile.')
@@ -1375,6 +1540,11 @@ class ModernHub:
             entry.insert(0, value)
         self.profile_instructions.delete('1.0', 'end')
         self.profile_instructions.insert('end', fields['custom_instructions'])
+        for key, value in fields.get('personalization', {}).items():
+            if key in self.personality_menus:
+                choice = next(label for label, stored_value in self.personality_values[key].items()
+                              if stored_value == value)
+                self._set_personality_choice(key, choice)
         self.profile_import_panel.pack_forget()
         self._import_fields = None
         self.save_profile()
@@ -1382,6 +1552,9 @@ class ModernHub:
     def save_profile(self):
         changes = {'name': self.profile_name.get().strip(), 'role': self.profile_role.get().strip(),
                    'custom_instructions': self.profile_instructions.get('1.0', 'end').strip()}
+        if hasattr(self, 'personality_menus'):
+            changes['personalization'] = {key: self.personality_values[key][menu.get()]
+                                          for key, menu in self.personality_menus.items()}
         self.profile_save_button.configure(state='disabled', text='Saving…')
         def complete(profile, error):
             self.profile_save_button.configure(state='normal', text='Save Amma’s profile')
@@ -1491,6 +1664,8 @@ class ModernHub:
             nav.configure(fg_color=SOFT if key == name else 'transparent', text_color=GREEN if key == name else MUTED)
         if name == 'Camera':
             self._refresh_faces()
+        if name == 'Personality':
+            self.refresh_personality_preferences()
         if name == 'Profile & Memory':
             self.refresh_profile_memory()
         if name == 'Conversation':
@@ -1502,6 +1677,18 @@ class ModernHub:
         self.window.deiconify()
         self.window.lift()
         self.show_page(page)
+
+    def refresh_personality_preferences(self):
+        if not hasattr(self, 'personality_menus'):
+            return
+        profile = self.app.character_profile
+        profile.refresh()
+        current = profile.personalization()
+        for key, menu in self.personality_menus.items():
+            choice = next(label for label, value in self.personality_values[key].items()
+                          if value == current[key])
+            self._set_personality_choice(key, choice)
+        self._update_personality_preview()
 
     def hide(self):
         if self._preview:

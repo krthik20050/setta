@@ -35,6 +35,18 @@ def decide(text, language, facts=(), now=None):
     return Decision('reply_model')
 
 
+def asks_for_current_facts(text):
+    """Force explicitly time-sensitive factual questions through live web search."""
+    value = re.sub(r'\s+', ' ', str(text or '').strip().casefold())
+    is_question = bool(re.search(
+        r'^(?:(?:and|also)\s+)?(?:who|what|when|where|which|how many|how much|is|are|tell me|can you tell me|look up|search for)\b',
+        value))
+    is_time_sensitive = bool(re.search(
+        r'\b(?:current(?:ly)?|latest|most recent|recent|today|right now|this week|this month|as of now)\b',
+        value))
+    return is_question and is_time_sensitive
+
+
 def asks_who_is_visible(text, language):
     """Recognize direct identity/presence questions across supported languages."""
     value=re.sub(r'[?!.,]+$', '', text.strip().casefold()).replace('’', "'")

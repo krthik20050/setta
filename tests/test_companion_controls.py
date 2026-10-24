@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 from src.character_profile import CharacterProfile
@@ -61,6 +62,35 @@ class ControlTests(unittest.TestCase):
             instructions = reader.instructions('en-IN')
             self.assertIn('Mama', instructions)
             self.assertIn('short, playful', instructions)
+            updated = CharacterProfile.save_preferences({'reply_length': 'brief', 'humor': 'rare'}, path)
+            self.assertEqual(updated.personalization()['reply_length'], 'brief')
+            self.assertEqual(updated.personalization()['humor'], 'rare')
+            self.assertEqual(updated.personalization()['advice_style'], 'ask_first')
+            self.assertEqual(updated.reply_word_limit(), 25)
+            self.assertIn('very brief replies', updated.instructions('en-IN'))
+            self.assertIn('only rarely', updated.reply_instructions('en-IN'))
+            updated = CharacterProfile.save_preferences({'reply_length': 'detailed'}, path)
+            self.assertEqual(updated.reply_word_limit(), 90)
+            self.assertEqual(updated.reply_sentence_limit(), 4)
             with self.assertRaises(ValueError):
                 CharacterProfile.save_personality({'name': ''}, path)
-            self.assertEqual(json.loads(path.read_text()), stored)
+            with self.assertRaises(ValueError):
+                CharacterProfile.save_preferences({'reply_length': 'dramatic'}, path)
+            actual = json.loads(path.read_text())
+            self.assertEqual(actual['future_field'], initial['future_field'])
+            self.assertEqual(actual['pronunciations'], initial['pronunciations'])
+
+    def test_concurrent_profile_and_personality_saves_preserve_both_updates(self):
+        parent = PROJECT_ROOT/'runtime'/'profile-tests'
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            path = Path(directory)/'amma.json'
+            path.write_text(json.dumps({'name': 'Amma', 'role': 'Mother'}), encoding='utf-8')
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                identity = pool.submit(CharacterProfile.save_personality, {'name': 'Mama'}, path)
+                preferences = pool.submit(CharacterProfile.save_preferences, {'reply_length': 'brief'}, path)
+                identity.result()
+                preferences.result()
+            saved = CharacterProfile.load(path)
+            self.assertEqual(saved.name, 'Mama')
+            self.assertEqual(saved.personalization()['reply_length'], 'brief')

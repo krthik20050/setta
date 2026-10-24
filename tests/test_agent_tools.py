@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import httpx
 
 from src.agent_tools import DesktopTools
+from src.character_profile import CharacterProfile
 from src.sarvam_conversation import SarvamConversation,RecognizedTurn
 
 
@@ -42,6 +43,26 @@ class AgentToolTests(unittest.TestCase):
         tools.cancelled=lambda:False
         self.assertEqual(tools.execute('open_file',{'path':'C:/Windows/System32/cmd.exe'},'Open cmd')['status'],'unavailable')
 
+    def test_model_cannot_choose_an_arbitrary_app_for_ambiguous_category_request(self):
+        profile=CharacterProfile({'permissions':{'desktop_apps':True}})
+        tools=DesktopTools(launcher=Mock())
+        tools.apps={'figma':Path('C:/Apps/Figma.exe')}
+        with patch('src.agent_tools.CharacterProfile.load',return_value=profile):
+            with patch.object(tools,'_launch_target') as launch:
+                result=tools.execute('open_app',{'app':'figma'},'Could you open a design app?')
+        self.assertEqual(result['status'],'unavailable')
+        launch.assert_not_called()
+
+    def test_resolved_category_candidate_still_uses_permission_checked_launcher(self):
+        profile=CharacterProfile({'permissions':{'desktop_apps':True}})
+        tools=DesktopTools(launcher=Mock())
+        tools.apps={'figma':Path('C:/Apps/Figma.exe')}
+        with patch('src.agent_tools.CharacterProfile.load',return_value=profile):
+            with patch.object(tools,'_launch_target') as launch:
+                result=tools.execute_resolved_app('figma','Could you open a design app?')
+        self.assertEqual(result['status'],'launch_requested')
+        launch.assert_called_once_with(Path('C:/Apps/Figma.exe'))
+
     def test_catalog_style_app_target_can_be_launched(self):
         launcher=Mock()
         tools=DesktopTools(launcher=launcher)
@@ -50,6 +71,62 @@ class AgentToolTests(unittest.TestCase):
             result=tools.execute('open_app',{'app':'docker_desktop'},'Please open Docker Desktop')
         launch.assert_called_once()
         self.assertEqual(result['status'],'launch_requested')
+
+    def test_app_candidates_do_not_treat_launch_requests_as_observed_usage(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'runtime') as folder:
+            tools=DesktopTools(launcher=Mock())
+            tools.app_usage_path=Path(folder)/'usage.json'
+            tools.apps={'figma':Path('C:/Apps/Figma.exe'),'canva':Path('C:/Apps/Canva.exe'),
+                        'notepad':Path('C:/Windows/notepad.exe')}
+            tools.app_displays={'figma':'Figma','canva':'Canva','notepad':'Notepad'}
+            candidates=tools.app_candidates('design')
+            self.assertEqual({row['app'] for row in candidates},{'canva','figma'})
+            observed=tools.app_candidates('design',observed_apps=['Canva.exe'])
+            self.assertEqual(observed[0]['app'],'canva')
+
+    def test_app_candidates_ignore_launch_requests_and_rank_observed_foreground_use(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'runtime') as folder:
+            tools=DesktopTools(launcher=Mock())
+            tools.app_usage_path=Path(folder)/'usage.json'
+            tools.apps={'figma':Path('C:/Apps/Figma.exe'),'canva':Path('C:/Apps/Canva.exe')}
+            tools.app_displays={'figma':'Figma','canva':'Canva'}
+            tools.app_usage_path.write_text(json.dumps({'figma':{'launch_requests':100,'last_launch_request':9999999999}}),encoding='utf-8')
+            candidates=tools.app_candidates('design')
+            scores={row['app']:row['score'] for row in candidates}
+            self.assertEqual(scores['figma'],scores['canva'])
+            observed=tools.app_candidates('design',observed_apps=['Canva.exe'])
+            self.assertGreater(observed[0]['score'],next(row['score'] for row in observed if row['app']=='figma'))
+
+    def test_category_candidates_do_not_match_target_path_or_settings_substrings(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'runtime') as folder:
+            tools=DesktopTools(launcher=Mock())
+            tools.app_usage_path=Path(folder)/'usage.json'
+            tools.apps={'figma':'com.squirrel.Figma.Figma','network_internet':'ms-settings:network',
+                        'restartagent':'C:/Apps/restartagent.exe','illustrator':'illustrator'}
+            tools.app_displays={'figma':'Figma','network_internet':'Network & Internet',
+                                'restartagent':'restartagent','illustrator':'Adobe Illustrator 2025'}
+            self.assertEqual({row['app'] for row in tools.app_candidates('browser')},set())
+            self.assertEqual({row['app'] for row in tools.app_candidates('design')},{'figma','illustrator'})
+
+    def test_foreground_executable_history_matches_installed_display_name(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'runtime') as folder:
+            tools=DesktopTools(launcher=Mock())
+            tools.app_usage_path=Path(folder)/'usage.json'
+            tools.apps={'figma':'com.squirrel.Figma.Figma','chrome':'Chrome',
+                        'google_chrome':'C:/Program Files/Chrome/chrome.exe'}
+            tools.app_displays={'figma':'Figma','chrome':'Chrome','google_chrome':'Google Chrome'}
+            rows=tools.app_candidates('design',observed_apps=['Figma.exe'])
+            self.assertEqual(rows[0]['observed_history_matches'],1)
+            browsers=tools.app_candidates('browser')
+            self.assertEqual(sum(row['display_name'] in {'Chrome','Google Chrome'} for row in browsers),1)
+
+    def test_real_odd_cache_is_discovered_across_sandbox_localappdata(self):
+        with patch.dict('os.environ',{'LOCALAPPDATA':r'C:\Users\DELL\AppData\Local\Packages\sandbox\AC',
+                                     'USERPROFILE':r'C:\Users\DELL'}):
+            tools=DesktopTools(launcher=Mock())
+        self.assertTrue(tools.app_cache_path.name=='apps_cache.json')
+        self.assertIn('figma',tools.apps)
+        self.assertEqual(tools.app_displays['figma'],'Figma')
 
     def test_search_returns_real_filename_without_reading_its_contents(self):
         root=Path(__file__).resolve().parents[1]

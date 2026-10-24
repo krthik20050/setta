@@ -11,13 +11,11 @@ import random
 
 from .mother_animation import animation_frames, ONE_SHOT, approved_fullbody
 from .desktop_walk import work_area, QuietWalk
-from .chat import chat_with_ai
 from .live_conversation import LiveConversation
 from .sarvam_conversation import RecognizedTurn, mixed_malayalam
 from .companion_context import Observation
 from .face_id import FaceID
 from .webcam import WebcamCapture
-from .voice import VoiceAgent
 from .sarvam_voice import SarvamVoiceAgent
 from .sound_manager import play_action_sound, SoundManagerWindow
 from .thought_bubble import draw_cloud, wrap_pages, float_offset, bubble_layout
@@ -28,6 +26,9 @@ from .desktop_activity import DesktopActivity
 from .companion_hub import CompanionHub, HubPreferences
 from .local_reminders import LocalReminders
 from .local_timers import LocalTimers
+from .location_lookup import asks_for_device_location, answer_current_location
+from .windows_location import WindowsLocationService
+from .study_check import classify_youtube_title, detect_phone_use
 
 
 from .paths import PROJECT_ROOT, ASSETS_DIR, MOTHER_ARTWORK_DIR, KNOWN_FACES_DIR
@@ -78,10 +79,18 @@ class PetApp:
         self._draw_close_button()
 
         sheet_path = str(MOTHER_ARTWORK_DIR / "mother-expressions-v2.png")
-        self.frames = {state: [ImageTk.PhotoImage(frame) for frame in frames]
-                       for state, frames in animation_frames(sheet_path, (CELL_W, CELL_H)).items()}
-        self.frames['walk_right'] = [ImageTk.PhotoImage(frame.transpose(Image.Transpose.FLIP_LEFT_RIGHT))
-                                     for frame in animation_frames(sheet_path, (CELL_W, CELL_H))['walk']]
+        source_frames = animation_frames(sheet_path, (CELL_W, CELL_H))
+        photo_cache = {}
+        def photo_for(frame):
+            key = id(frame)
+            if key not in photo_cache:
+                photo_cache[key] = ImageTk.PhotoImage(frame, master=self.root)
+            return photo_cache[key]
+        self.frames = {state: [photo_for(frame) for frame in frames]
+                       for state, frames in source_frames.items()}
+        walk_right_frames = [frame.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+                             for frame in source_frames['walk']]
+        self.frames['walk_right'] = [photo_for(frame) for frame in walk_right_frames]
         # Keep identity anchored to the exact approved reference, not a later
         # expression generation whose facial proportions may have drifted.
         approved = approved_fullbody(str(MOTHER_ARTWORK_DIR / 'mother-likeness-v6.png'),
@@ -99,6 +108,7 @@ class PetApp:
         self._last_reminder_notice = None
         self._hub_chat_busy = False
         self._closing = False
+        self.location_service = WindowsLocationService(self.root)
 
         self.state = "idle"
         self.frame_idx = 0
@@ -121,7 +131,9 @@ class PetApp:
         self._handsfree_server = None
         sarvam_key = os.environ.get('SARVAM_API_KEY', '').strip()
         self._live_conversation = LiveConversation(sarvam_key, observations=self._memory_observations,
-                                                   camera_frame=self._camera_face_jpeg, camera_request=self._request_camera_preview) if sarvam_key else None
+                                                   camera_frame=self._camera_face_jpeg, camera_request=self._request_camera_preview,
+                                                   location_provider=self.location_service,
+                                                   study_check=self._study_phone_check) if sarvam_key else None
         self.character_profile = CharacterProfile.load()
         self.desktop_activity = DesktopActivity(PROJECT_ROOT/'data/memory/desktop-activity.sqlite',
                                                 self.character_profile.data.get('context', {}))
@@ -131,7 +143,11 @@ class PetApp:
         self.root.title(self.character_profile.name + " — SETTA")
         self._recognition_greeting = RecognitionGreeting(self.character_profile.greetings)
         if sarvam_key or self.gemini_api_key:
-            self.voice_agent = SarvamVoiceAgent(sarvam_key) if sarvam_key else VoiceAgent(self.gemini_api_key)
+            if sarvam_key:
+                self.voice_agent = SarvamVoiceAgent(sarvam_key)
+            else:
+                from .voice import VoiceAgent
+                self.voice_agent = VoiceAgent(self.gemini_api_key)
             self.voice_agent.muted = True
             self.voice_agent.on_state_change = self._voice_on_state
             self.voice_agent.on_text_partial = self._voice_on_text
@@ -142,12 +158,14 @@ class PetApp:
                 self.voice_agent.on_transcript_partial = self._voice_on_transcript_partial
                 self.voice_agent.observations = self._memory_observations
                 self.voice_agent.camera_frame = self._camera_face_jpeg
+                self.voice_agent.camera_request = self._request_camera_preview
+                self.voice_agent.study_check = self._study_phone_check
 
         self._cam_window = None
         self._cam_label = None
 
         self._bubble_job = None
-        # Camera capture starts only through an explicit in-app request.
+        # Camera capture starts from the Camera page or the user's study check-in.
         
         # Start main animation loop and idle behavior scheduler
         self._animate()
@@ -544,8 +562,11 @@ class PetApp:
         if self.hub is not None:
             self.hub.close()
         self._stop_walk()
+        if isinstance(self.voice_agent, SarvamVoiceAgent):
+            self.voice_agent.cancel_pending_restart()
         if self.voice_agent and self.voice_agent.active:
             self.voice_agent.stop()
+        self.location_service.close()
         try:
             import keyboard as kb
             kb.remove_hotkey('alt+m')
@@ -645,6 +666,85 @@ class PetApp:
                 self.hub.toggle_preview()
         self.root.after(0, open_preview)
 
+    def _study_phone_check(self):
+        """Use a stable window context, then optionally send one visible camera frame to Groq."""
+        if not self.character_profile.allowed('camera'):
+            return {'phone_status': 'unknown', 'content_status': 'unknown', 'image_sent': False}
+        window = None
+        settings = self.character_profile.data.get('context', {})
+        if self.character_profile.allowed('desktop_context'):
+            deadline = time.monotonic() + 6
+            stable_since = None
+            previous = None
+            while time.monotonic() < deadline and not self._closing:
+                try:
+                    current = self.desktop_activity.reader()
+                except (OSError, RuntimeError):
+                    current = None
+                identity = ((current or {}).get('app', ''), (current or {}).get('title', ''))
+                if current and identity == previous:
+                    stable_since = stable_since or time.monotonic()
+                    if time.monotonic() - stable_since >= 4:
+                        window = current
+                        break
+                else:
+                    previous = identity
+                    stable_since = time.monotonic() if current else None
+                time.sleep(.2)
+        else:
+            # Keep the four-second settling interval consistent when desktop
+            # context is disabled, without reading the foreground window.
+            time.sleep(4)
+
+        client = getattr(self._live_conversation, 'groq_client', None)
+        model = settings.get('vision_model', 'qwen/qwen3.8-27b')
+        title = (window or {}).get('title', '')
+        is_youtube = 'youtube' in title.casefold() or 'youtube' in (window or {}).get('app', '').casefold()
+        if not client:
+            return {'phone_status': 'unknown', 'content_status': 'unknown',
+                    'title_sent': False, 'image_sent': False}
+        content_status = 'unknown'
+        title_sent = bool(is_youtube and settings.get('window_title', False) and client and title)
+        if is_youtube and settings.get('window_title', False):
+            content_status = classify_youtube_title(client, model, title)
+
+        # A one-shot visible capture. If the camera was already on, leave it on;
+        # otherwise release it after this check so the study trigger is not a
+        # hidden continuous camera session.
+        camera_was_on = bool(self.webcam._thread and self.webcam._thread.is_alive()
+                             and not self.webcam._stop.is_set())
+        jpeg = None
+        try:
+            self._request_camera_preview()
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline and not self._closing:
+                with self.webcam.face_lock:
+                    sample = self.webcam.latest_frame
+                    frame = sample[1].copy() if sample and time.monotonic() - sample[0] <= 1 else None
+                if frame is not None:
+                    height, width = frame.shape[:2]
+                    if max(height, width) > 768:
+                        scale = 768 / max(height, width)
+                        frame = cv2.resize(frame, (round(width * scale), round(height * scale)))
+                    ok, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 78])
+                    if ok:
+                        jpeg = encoded.tobytes()
+                        break
+                time.sleep(.05)
+            image_sent = bool(client and jpeg)
+            phone_status = detect_phone_use(client, model, jpeg) if image_sent else 'unknown'
+        finally:
+            if not camera_was_on and not self._closing:
+                def stop_temporary_camera():
+                    if self.hub is not None and self.hub._preview:
+                        self.hub.stop_camera()
+                try:
+                    self.root.after(0, stop_temporary_camera)
+                except RuntimeError:
+                    pass
+        return {'phone_status': phone_status, 'content_status': content_status,
+                'title_sent': title_sent, 'image_sent': image_sent}
+
     def _open_hub(self, page='Home'):
         if self._closing:
             return
@@ -695,7 +795,11 @@ class PetApp:
 
     def _chat_response(self, prompt):
         import re
-        if self._live_conversation is None:
+        if asks_for_device_location(prompt):
+            language = ('ml-IN' if re.search(r'[\u0d00-\u0d7f]', prompt) or mixed_malayalam(prompt)
+                        else 'hi-IN' if re.search(r'[\u0900-\u097f]', prompt) else 'en-IN')
+            reply = answer_current_location(self.location_service, self.character_profile, language)
+        elif self._live_conversation is None:
             reply = 'Sarvam is not configured. Add SARVAM_API_KEY to connect conversation and memory.'
         else:
             language = 'ml-IN' if re.search(r'[\u0d00-\u0d7f]', prompt) else 'hi-IN' if re.search(r'[\u0900-\u097f]', prompt) else 'en-IN'
