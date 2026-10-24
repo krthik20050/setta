@@ -32,7 +32,7 @@ Setta is a Windows desktop companion built with Python, Tkinter, and CustomTkint
 - **Multilingual voice:** the Sarvam route recognizes Malayalam, English, and Hindi, generates a reply in the detected language, and speaks it with a configured voice. Malayalam-English code-mixing is supported by the voice flow.
 - **Personalization and memory:** configure the companion’s name, persona, speaking preferences, and confirmed facts. Conversation and memory data are stored locally; selected context is sent to the configured reply provider when generating a response.
 - **Reminders:** create water and habit reminders. They run while Setta is open and rely on your confirmation; camera proof is not collected.
-- **Camera and People:** camera preview and face enrollment are started by the user. Face processing uses local models; camera capture is not continuously enabled by default.
+- **Camera and People:** camera preview and face enrollment are user-started. When camera permission is enabled, a spoken study check-in can also request one fresh frame. If Groq is configured, the app can send that frame for a limited phone-use check and, when window-title access is enabled, send the active YouTube title for content classification. The check does not save its image and stops a temporary camera preview afterward.
 - **Connections:** optionally connect a Google Calendar desktop OAuth client for read-only primary-calendar events. The app does not bundle Google credentials.
 
 The application code is in `src/`, with `setta.py` as the desktop entry point. This is an actively evolving personal prototype, not a polished or supported consumer product.
@@ -59,7 +59,8 @@ The reference used for my current voice was taken from a teaching or explainer v
 
 - Microphone audio is sent to Sarvam while voice conversation is active so it can be transcribed. Do not enable voice mode unless you are comfortable with that provider processing the audio.
 - Recognized text, bounded conversation context, and instructions are sent to the selected reply provider. Sarvam also receives text for cloned speech synthesis. Provider retention and data handling are governed by those providers’ terms.
-- Local conversation and profile data are stored on the device. Camera preview and face enrollment use local processing; camera capture starts only when requested in the app.
+- Conversation text, event diagnostics, captured microphone WAVs, and native synthesized WAV chunks are stored locally under `data/conversation-archive/`. These files are ignored by Git, but this implementation does not encrypt them or expire them automatically; remove the local archive yourself when you no longer need it. The outgoing browser speech stream is not archived.
+- Camera preview and face enrollment use local processing. A spoken study check-in can request one temporary webcam frame when Camera permission is enabled; if Groq is configured, that frame is sent for limited phone-use classification and is not saved by the check. An enabled window-title permission can also send the active YouTube title for classification.
 - Google Calendar is optional and read-only in this integration. OAuth tokens are protected with Windows DPAPI.
 - `.env`, private configuration, recordings, enrolled-face data, conversation data, and generated runtime files must stay out of version control. No off-device backup is configured by this project.
 
@@ -209,6 +210,7 @@ PROJECT SETTA/
 
 - [Agent handoff and current implementation map](docs/agent-handoff-2026-10-22.md)
 - [Automatic voice conversation: setup, privacy, and verification limits](docs/voice/automatic-conversation.md)
+- [Conversation archive and audio retention details](docs/companion/conversation-recording-and-pauses.md)
 - [Mother voice status and reference workflow](docs/voice/mother-voice-status.md)
 - [Current People and face workflow](docs/real-people-discovery-2026-10-22.md)
 - [Personality and memory guide](docs/companion/amma-profile.md)
