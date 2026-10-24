@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 import wave
 
 import httpx
@@ -16,15 +17,30 @@ import httpx
 from .paths import PROJECT_ROOT
 from .character_profile import CharacterProfile
 from .pronunciation import spoken_text
-from .reply_errors import groq_error
+from .reply_errors import ReplyProviderError, groq_error
 from .reply_fallback import ReplyFallback
 from .address_preferences import address_segments
+from .model_router import Route, choose_tier, log_route
 
 SUPPORTED = {'ml-IN': 'Malayalam', 'en-IN': 'English', 'hi-IN': 'Hindi'}
+REPLY_PROVIDERS = {'auto', 'groq', 'openai', 'sarvam'}
+RETRY_COOLDOWN_SECONDS = 30
+BROKEN_COOLDOWN_SECONDS = 600
 
 
 class ReplyLanguageError(ValueError):
     """A recoverable language mismatch, rather than a stopped voice session."""
+
+
+class IncompleteReply(ValueError):
+    """The model answered but not usably; a stronger tier may succeed."""
+
+
+class _ProviderFailure(Exception):
+    def __init__(self, error: Exception, cooldown: float):
+        super().__init__(str(error))
+        self.error = error
+        self.cooldown = cooldown
 
 
 def matches_language(text: str, language: str) -> bool:
@@ -99,36 +115,41 @@ class SarvamConversation:
                  transport: httpx.BaseTransport | None = None,
                  openai_api_key: str | None = None,
                  groq_api_key: str | None = None,
-                 reply_provider: str | None = None):
+                 reply_provider: str | None = None,
+                 request_timeout: float = 120, connect_timeout: float = 15):
         config_path = config_path or PROJECT_ROOT/'config/voice.json'
         self.config = json.loads(config_path.read_text(encoding='utf-8'))
         self.profile = CharacterProfile.load()
         self.client = httpx.Client(base_url='https://api.sarvam.ai',
             headers={'api-subscription-key': api_key}, transport=transport,
-            timeout=httpx.Timeout(120, connect=15), follow_redirects=False)
+            timeout=httpx.Timeout(request_timeout, connect=connect_timeout), follow_redirects=False)
         self.history: list[dict] = []
         self.last_language = 'ml-IN'
         openai_key = os.environ.get('OPENAI_API_KEY', '').strip() if openai_api_key is None else openai_api_key.strip()
         # Separate clients ensure one provider's credentials never reach another.
         self.openai_client = httpx.Client(base_url='https://api.openai.com',
             headers={'Authorization': 'Bearer ' + openai_key}, transport=transport,
-            timeout=httpx.Timeout(90, connect=15), follow_redirects=False) if openai_key else None
+            timeout=httpx.Timeout(min(request_timeout, 90), connect=connect_timeout), follow_redirects=False) if openai_key else None
         self.openai_model = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini').strip() or 'gpt-4.1-mini'
+        self.openai_deep_model = os.environ.get('OPENAI_DEEP_MODEL', 'gpt-4.1').strip() or 'gpt-4.1'
         groq_key = os.environ.get('GROQ_API_KEY', '').strip() if groq_api_key is None else groq_api_key.strip()
         self.groq_client = httpx.Client(base_url='https://api.groq.com/openai/v1',
             headers={'Authorization': 'Bearer ' + groq_key}, transport=transport,
-            timeout=httpx.Timeout(90, connect=15), follow_redirects=False) if groq_key else None
+            timeout=httpx.Timeout(min(request_timeout, 90), connect=connect_timeout), follow_redirects=False) if groq_key else None
         self.groq_model = os.environ.get('GROQ_MODEL', 'openai/gpt-oss-20b').strip() or 'openai/gpt-oss-20b'
         self.reply_fallback = ReplyFallback(transport, sarvam_key=api_key,
             sarvam_model=self.config['chat_model'])
         self.reply_provider = reply_provider or os.environ.get('REPLY_PROVIDER', '').strip() or (
-            'groq' if groq_key else 'openai' if openai_key else 'sarvam')
-        if self.reply_provider not in {'groq', 'openai', 'sarvam'}:
+            'auto' if openai_key else 'groq' if groq_key else 'sarvam')
+        if self.reply_provider not in REPLY_PROVIDERS:
             self.close()
-            raise ValueError('REPLY_PROVIDER must be groq, openai or sarvam')
-        if (self.reply_provider == 'groq' and not groq_key) or (self.reply_provider == 'openai' and not openai_key):
+            raise ValueError('REPLY_PROVIDER must be auto, groq, openai or sarvam')
+        if ((self.reply_provider == 'groq' and not groq_key) or (self.reply_provider == 'openai' and not openai_key)
+                or (self.reply_provider == 'auto' and not (openai_key or groq_key))):
             self.close()
             raise ValueError('The selected reply provider API key is missing')
+        self._cooldowns: dict[tuple[str, str], float] = {}
+        self.last_route: dict | None = None
 
     def close(self) -> None:
         if getattr(self, 'reply_fallback', None):
@@ -168,16 +189,14 @@ class SarvamConversation:
         self.last_language = language
         return RecognizedTurn(text, language, data.get('language_probability'), mixed_malayalam(text))
 
-    def reply(self, turn: RecognizedTurn, _repair: bool = False) -> str:
-        if not _repair:
-            self._turn_tool_results = {}
+    def _instruction(self, turn: RecognizedTurn, compact: bool, repair: bool) -> str:
         instruction = (
-            (self.profile.reply_instructions(turn.language) if self.reply_provider=='groq'
+            (self.profile.reply_instructions(turn.language) if compact
              else self.profile.instructions(turn.language)) +
             f'Reply in {SUPPORTED[turn.language]} to this turn. '
             + ('The user is mixing Malayalam and English; mirror that naturally, keeping English terms in Latin script. '
                if turn.mixed else 'Keep your reply in this language; do not add an English translation. ')
-            + 'Give a direct, natural answer in one or two short sentences, no more than 45 words. '
+            + f'Give a direct, natural answer in a conversational length, no more than {self.profile.reply_word_limit()} words. '
             'Do not add hesitation sounds, filler words, stutters or repeated phrases. '
             'Follow the configured companion role and tone, using everyday conversational delivery rather than narration or a service script. '
             'Match the emotional context: gentle reassurance for worry, light warmth for everyday chat, '
@@ -193,88 +212,151 @@ class SarvamConversation:
             'Do not copy the language of previous assistant messages. '
             + ('Use English Latin-script words only.' if turn.language == 'en-IN' else 'Use the native script for speech.')
         )
-        if _repair:
+        if repair:
             instruction += ' The previous attempt used the wrong language. Rewrite the answer in ONLY the requested language.'
         preferred=getattr(self.profile,'address_preference',None)
         if preferred:
             instruction+=' Explicit user preference overrides translated pet names: preserve the exact address '+preferred['term']+'. Do not translate it into son or beta. Use it sparingly. Keep the rest of the response in the requested language.'
+        return instruction
+
+    def _chain(self, tier: str) -> list[tuple[str, str]]:
+        if self.reply_provider == 'groq':
+            return [('groq', self.groq_model)]
+        if self.reply_provider == 'openai':
+            return [('openai', self.openai_model)]
+        if self.reply_provider == 'sarvam':
+            return [('sarvam', self.config['chat_model'])]
+        openai = ([self.openai_deep_model] if tier == 'deep' else []) + [self.openai_model]
+        chain = [('openai', model) for model in dict.fromkeys(openai)] if self.openai_client else []
+        return chain + ([('groq', self.groq_model)] if self.groq_client else [])
+
+    def reply(self, turn: RecognizedTurn, _repair: bool = False) -> str:
+        if not _repair:
+            self._turn_tool_results = {}
+        route = choose_tier(turn.text, turn.language) if self.reply_provider == 'auto' else Route('fixed', 'reply_provider')
+        # A language repair is a failed attempt, so it moves up to the deep tier.
+        escalated = _repair and route.tier == 'fast'
+        tiers = ['deep'] if escalated else [route.tier] + (['deep'] if route.tier == 'fast' else [])
+        for index, tier in enumerate(tiers):
+            try:
+                text, provider, model = self._generate(turn, tier, _repair)
+                break
+            except IncompleteReply:
+                if index == len(tiers) - 1:
+                    raise
+                escalated = True
+        if not text or len(text) > 900:
+            raise ValueError('Reply was empty or too long for a short spoken turn.')
+        text = localized_address(text, turn.language, self.profile)
+        text = compact_reply(text, max_words=self.profile.reply_word_limit(),
+                             max_sentences=self.profile.reply_sentence_limit())
+        if not matches_language(text, turn.language):
+            if not _repair:
+                return SarvamConversation.reply(self, turn, _repair=True)
+            raise ReplyLanguageError('I could not switch languages for that reply. Please say it again; I am still listening.')
+        self.last_route = {'tier': tier, 'reason': route.reason, 'provider': provider, 'model': model,
+                           'escalated': escalated}
+        log_route(self.last_route)
+        self.history.extend([{'role': 'user', 'content': turn.text}, {'role': 'assistant', 'content': text}])
+        self.history = self.history[-8:]
+        return text
+
+    def _generate(self, turn: RecognizedTurn, tier: str, repair: bool) -> tuple[str, str, str]:
+        chain = self._chain(tier)
+        now = time.monotonic()
+        # Cooldowns only skip known-failing models; if all are cooling, try them anyway.
+        ready = [link for link in chain if self._cooldowns.get(link, 0) <= now] or chain
+        for index, (provider, model) in enumerate(ready):
+            try:
+                return self._complete(turn, provider, model, repair), provider, model
+            except _ProviderFailure as failure:
+                self._cooldowns[(provider, model)] = time.monotonic() + failure.cooldown
+                if index == len(ready) - 1:
+                    raise failure.error from failure
+        raise ReplyProviderError('No reply model is configured.')
+
+    def _complete(self, turn: RecognizedTurn, provider: str, model: str, repair: bool) -> str:
+        instruction = self._instruction(turn, provider == 'groq', repair)
         # Keep factual user/context evidence; do not prime the model with replies
         # in a language the user has just switched away from.
         history = [m for m in self.history[-8:] if m['role'] != 'assistant'
                    or matches_language(m['content'], turn.language)]
         messages = [{'role': 'system', 'content': instruction}] + history + [
             {'role': 'user', 'content': turn.text}]
-        if self.reply_provider == 'groq':
-            payload = {'model': self.groq_model, 'messages': messages,
-                       'max_completion_tokens': 768, 'stream': False}
-            if self.groq_model.startswith('openai/gpt-oss'):
-                payload['reasoning_effort'] = 'low'
-            tools = getattr(self,'agent_tools',None)
-            plain_greeting = re.fullmatch(r'\s*(?:hi|hello|hey|good morning|good evening|good night|how are you)[!?.\s]*',turn.text,re.I)
-            if tools and not plain_greeting:
-                payload['tools'] = tools.schemas
-                payload['parallel_tool_calls'] = False
-            choices = []
-            for attempt in range(4):
-                response = self.reply_fallback.post(self.groq_client, payload)
-                if not response.is_success:
-                    raise groq_error(response, self.groq_model)
-                choices = response.json().get('choices') or []
-                calls = choices[0].get('message',{}).get('tool_calls',[]) if choices else []
-                if not calls or not tools:
-                    break
-                if attempt == 3 or len(calls)>4:
-                    raise ValueError('Tool limit reached for this turn. Please make a shorter request.')
-                messages.append(choices[0]['message'])
-                for call in calls:
-                    function = call.get('function',{})
-                    name = function.get('name','')
-                    try:
-                        arguments=json.loads(function.get('arguments','{}'))
-                    except (ValueError,TypeError):
-                        arguments=None
-                    key = name+json.dumps(arguments,sort_keys=True)
-                    if key not in self._turn_tool_results:
-                        self._turn_tool_results[key] = tools.execute(name,arguments,turn.text)
-                    messages.append({'role':'tool','tool_call_id':call['id'],
-                                     'content':json.dumps(self._turn_tool_results[key],ensure_ascii=False)})
-            if not choices or choices[0].get('finish_reason') != 'stop':
-                raise ValueError('Groq reply was incomplete. Please try a shorter question.')
-            text = (choices[0].get('message', {}).get('content') or '').strip()
-        elif self.reply_provider == 'openai':
-            response = self.openai_client.post('/v1/responses', json={
-                'model': self.openai_model, 'instructions': instruction,
-                'input': messages[1:], 'max_output_tokens': 500, 'store': False,
-            })
-            if not response.is_success:
-                raise RuntimeError(f'OpenAI reply failed (HTTP {response.status_code}). Check API key, model access or API credit balance.')
-            data = response.json()
-            if data.get('status') != 'completed':
-                raise ValueError('OpenAI reply was incomplete. Please try a shorter question.')
-            text = ' '.join(part.get('text', '') for item in data.get('output', [])
-                if item.get('type') == 'message' for part in item.get('content', [])
-                if part.get('type') == 'output_text').strip()
-        else:
+        if provider == 'sarvam':
             data = self._payload(self.client.post('/v1/chat/completions', json={
-                'model': self.config['chat_model'], 'messages': messages,
+                'model': model, 'messages': messages,
                 'max_tokens': 350, 'temperature': .3, 'stream': False, 'reasoning_effort': None,
             }))
             choices = data.get('choices') or []
             if not choices or choices[0].get('finish_reason') == 'length':
                 raise ValueError('Reply was incomplete. Please try a shorter question.')
-            text = (choices[0].get('message', {}).get('content') or '').strip()
-        if not text or len(text) > 900:
-            raise ValueError('Reply was empty or too long for a short spoken turn.')
-        text = localized_address(text, turn.language, self.profile)
-        text = compact_reply(text)
-        text = compact_reply(text)
-        if not matches_language(text, turn.language):
-            if not _repair:
-                return SarvamConversation.reply(self, turn, _repair=True)
-            raise ReplyLanguageError('I could not switch languages for that reply. Please say it again; I am still listening.')
-        self.history.extend([{'role': 'user', 'content': turn.text}, {'role': 'assistant', 'content': text}])
-        self.history = self.history[-8:]
-        return text
+            return (choices[0].get('message', {}).get('content') or '').strip()
+        payload = {'model': model, 'messages': messages, 'stream': False}
+        if provider == 'groq':
+            payload['max_completion_tokens'] = 768
+            if model.startswith('openai/gpt-oss'):
+                payload['reasoning_effort'] = 'low'
+        else:
+            payload['max_completion_tokens'] = 500
+            payload['store'] = False
+        tools = getattr(self,'agent_tools',None)
+        plain_greeting = re.fullmatch(r'\s*(?:hi|hello|hey|good morning|good evening|good night|how are you)[!?.\s]*',turn.text,re.I)
+        if tools and not plain_greeting:
+            payload['tools'] = tools.schemas
+            payload['parallel_tool_calls'] = False
+        choices = []
+        for attempt in range(4):
+            choices = self._post(provider, model, payload).json().get('choices') or []
+            message = choices[0].get('message', {}) if choices else {}
+            calls = message.get('tool_calls') or []
+            if not calls or not tools:
+                break
+            if attempt == 3 or len(calls)>4:
+                raise IncompleteReply('Tool limit reached for this turn. Please make a shorter request.')
+            messages.append({'role': 'assistant', 'content': message.get('content'), 'tool_calls': calls})
+            for call in calls:
+                function = call.get('function',{})
+                name = function.get('name','')
+                try:
+                    arguments=json.loads(function.get('arguments','{}'))
+                except (ValueError,TypeError):
+                    arguments=None
+                key = name+json.dumps(arguments,sort_keys=True)
+                if key not in self._turn_tool_results:
+                    self._turn_tool_results[key] = tools.execute(name,arguments,turn.text)
+                messages.append({'role':'tool','tool_call_id':call['id'],
+                                 'content':json.dumps(self._turn_tool_results[key],ensure_ascii=False)})
+        if not choices or choices[0].get('finish_reason') != 'stop':
+            raise IncompleteReply('Reply was incomplete. Please try a shorter question.')
+        return (choices[0].get('message', {}).get('content') or '').strip()
+
+    def _post(self, provider: str, model: str, payload: dict) -> httpx.Response:
+        name = 'Groq' if provider == 'groq' else 'OpenAI'
+        try:
+            if provider == 'groq':
+                response = self.reply_fallback.post(self.groq_client, payload)
+            else:
+                response = self.openai_client.post('/v1/chat/completions', json=payload)
+                ReplyFallback._usage(response, payload, 'openai')
+        except (httpx.TimeoutException, httpx.NetworkError) as error:
+            raise _ProviderFailure(ReplyProviderError(f'{name} could not be reached. Check the network connection.'),
+                                   RETRY_COOLDOWN_SECONDS) from error
+        if response.is_success:
+            return response
+        if provider == 'groq':
+            error = groq_error(response, model)
+        else:
+            error = ReplyProviderError(f'OpenAI reply failed (HTTP {response.status_code}). '
+                                       'Check API key, model access or API credit balance.')
+        if response.status_code in {401, 403, 404}:
+            cooldown = BROKEN_COOLDOWN_SECONDS
+        else:
+            try:
+                cooldown = min(BROKEN_COOLDOWN_SECONDS, max(1.0, float(response.headers.get('retry-after', ''))))
+            except ValueError:
+                cooldown = RETRY_COOLDOWN_SECONDS
+        raise _ProviderFailure(error, cooldown)
 
     def voice_for(self, turn: RecognizedTurn, reply: str = '') -> tuple[str, int]:
         route = 'malayalam_mixed' if turn.language == 'ml-IN' and (turn.mixed or mixed_malayalam(reply)) else turn.language

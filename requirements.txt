@@ -11,6 +11,8 @@ python-dotenv
 httpx
 websockets>=15,<17
 customtkinter>=5.2,<7
+winrt-Windows.Devices.Geolocation>=3.2.1,<4
+reverse-geocode>=1.6.6,<2
 playwright>=1.40,<2
 
 tkinterdnd2>=0.4,<0.5

@@ -132,14 +132,14 @@ class ConversationTests(unittest.TestCase):
     def test_openai_reply_uses_separate_credentials_and_native_prompt(self):
         def handler(request):
             self.assertEqual(request.url.host,'api.openai.com')
-            self.assertEqual(request.url.path,'/v1/responses')
+            self.assertEqual(request.url.path,'/v1/chat/completions')
             self.assertEqual(request.headers['authorization'],'Bearer openai-test-only')
             self.assertNotIn('api-subscription-key',request.headers)
             body=json.loads(request.content)
             self.assertFalse(body['store'])
-            self.assertIn('Malayalam',body['instructions'])
-            return httpx.Response(200,json={'status':'completed','output':[{'type':'message','content':[{'type':'output_text','text':'നമുക്ക് പഠിക്കാം.'}]}]})
-        c=SarvamConversation('fake-sarvam-key',transport=httpx.MockTransport(handler),openai_api_key='openai-test-only')
+            self.assertIn('Malayalam',body['messages'][0]['content'])
+            return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':'നമുക്ക് പഠിക്കാം.'}}]})
+        c=SarvamConversation('fake-sarvam-key',transport=httpx.MockTransport(handler),openai_api_key='openai-test-only',groq_api_key='')
         self.addCleanup(c.close)
         self.assertEqual(c.reply(RecognizedTurn('ഹലോ','ml-IN',None,False)),'നമുക്ക് പഠിക്കാം.')
 
@@ -148,7 +148,7 @@ class ConversationTests(unittest.TestCase):
         def handler(request):
             calls.append(request.url.host)
             return httpx.Response(401,text='openai-test-only private body')
-        c=SarvamConversation('fake-sarvam-key',transport=httpx.MockTransport(handler),openai_api_key='openai-test-only')
+        c=SarvamConversation('fake-sarvam-key',transport=httpx.MockTransport(handler),openai_api_key='openai-test-only',groq_api_key='')
         self.addCleanup(c.close)
         with self.assertRaises(RuntimeError) as caught: c.reply(RecognizedTurn('Hello','en-IN',None,False))
         self.assertNotIn('openai-test-only',str(caught.exception))

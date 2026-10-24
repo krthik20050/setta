@@ -42,10 +42,14 @@ class SarvamVoiceAgent:
         self._lifecycle_lock = threading.Lock()
         self.observations = lambda: []
         self.camera_frame = None
+        self.camera_request = None
+        self.study_check = None
         self._phase = 'idle'
         self._turn_cancel = threading.Event()
         self._work_busy = threading.Event()
         self._reply_thread = None
+        self._restart_pending = False
+        self._restart_thread = None
         self.voice_interruptions = False  # Enable with headphones; no native AEC yet.
         self._playing = threading.Event()
         self._input_speaking = threading.Event()
@@ -63,8 +67,20 @@ class SarvamVoiceAgent:
             self._start_locked()
 
     def _start_locked(self) -> None:
-        if (self._thread and self._thread.is_alive()) or (self._reply_thread and self._reply_thread.is_alive()):
-            self._notify(self.on_text_final, 'The previous voice turn is finishing. Please try again shortly.')
+        if self.active:
+            return
+        previous_threads = tuple(thread for thread in (self._thread, self._reply_thread)
+                                 if thread and thread.is_alive())
+        if previous_threads:
+            if not self._stop.is_set():
+                self._notify(self.on_text_final, 'Voice Chat is still starting. Please wait a moment.')
+                return
+            self._restart_pending = True
+            if not (self._restart_thread and self._restart_thread.is_alive()):
+                self._restart_thread = threading.Thread(
+                    target=self._restart_after_previous_session, daemon=True)
+                self._restart_thread.start()
+            self._notify(self.on_text_final, 'Restarting Voice Chat after the previous turn finishes.')
             return
         self._stop.clear()
         self._turn_cancel.clear()
@@ -74,6 +90,23 @@ class SarvamVoiceAgent:
         self.active = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def _restart_after_previous_session(self) -> None:
+        while True:
+            previous_threads = tuple(thread for thread in (self._thread, self._reply_thread)
+                                     if thread and thread.is_alive()
+                                     and thread is not threading.current_thread())
+            if not previous_threads:
+                break
+            for thread in previous_threads:
+                thread.join()
+        with self._lifecycle_lock:
+            if self._restart_thread is threading.current_thread():
+                self._restart_thread = None
+            if not self._restart_pending:
+                return
+            self._restart_pending = False
+            self._start_locked()
 
     @property
     def busy(self) -> bool:
@@ -94,7 +127,9 @@ class SarvamVoiceAgent:
         conversation = None
         try:
             self._phase = 'greeting'
-            conversation = LiveConversation(self._key, observations=self.observations, camera_frame=self.camera_frame)
+            conversation = LiveConversation(self._key, observations=self.observations, camera_frame=self.camera_frame,
+                                           camera_request=self.camera_request, study_check=self.study_check,
+                                           request_timeout=35, connect_timeout=5)
             fixed = canonical_greeting(text, language)
             script = {'ml-IN': r'[\u0d00-\u0d7f]', 'hi-IN': r'[\u0900-\u097f]'}.get(language)
             if fixed:
@@ -128,12 +163,18 @@ class SarvamVoiceAgent:
             self._notify(self.on_state_change, 'idle')
 
     def stop(self) -> None:
-        self.active = False
-        self._stop.set()
+        with self._lifecycle_lock:
+            self._restart_pending = False
+            self.active = False
+            self._stop.set()
         self.interrupt()
         self._notify(self.on_speech_motion, None)
         with self._play_lock:
             winsound.PlaySound(None, 0)
+
+    def cancel_pending_restart(self) -> None:
+        with self._lifecycle_lock:
+            self._restart_pending = False
 
     def interrupt(self):
         """Stop only this reply; leave the native microphone session running."""
@@ -242,7 +283,9 @@ class SarvamVoiceAgent:
                 if conversation:
                     conversation.close()
         try:
-            conversation = LiveConversation(self._key, observations=self.observations, camera_frame=self.camera_frame)
+            conversation = LiveConversation(self._key, observations=self.observations, camera_frame=self.camera_frame,
+                                           camera_request=self.camera_request, study_check=self.study_check,
+                                           request_timeout=35, connect_timeout=5)
             self._reply_thread = threading.Thread(target=replies, daemon=True)
             self._reply_thread.start()
             if self.realtime_input:
@@ -352,9 +395,10 @@ class SarvamVoiceAgent:
             conversation.journal.event(capture_id, 'native_capture', transport='realtime',
                 seconds=round(len(captured.frame_data)/32000, 3),
                 end_reason='server_final_with_continuation_hold', audio_buffer='rolling_last_five_minutes')
-            # Cancellation happens only after a complete, nonempty recognized
-            # turn, never because a noise recording happened to end.
-            self.interrupt()
+            # Without headphones, let the current reply finish and queue this
+            # complete turn behind it. Automatic interruption is opt-in.
+            if self.voice_interruptions:
+                self.interrupt()
             try:
                 _, replaced_id, _, _ = captured_turns.get_nowait()
                 conversation.journal.event(replaced_id, 'superseded_in_queue', replacement=capture_id)

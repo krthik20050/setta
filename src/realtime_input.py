@@ -75,7 +75,7 @@ def capture_turns(key, stop, playing, on_partial, on_speaking, on_status=lambda 
     url = 'wss://api.sarvam.ai/speech-to-text-realtime/ws?' + urlencode(parameters)
     try:
         with connect(url, additional_headers={'api-subscription-key':key},
-                     open_timeout=15, close_timeout=2, max_size=1024*1024,
+                     open_timeout=8, close_timeout=2, max_size=1024*1024,
                      ping_interval=15, ping_timeout=15) as socket:
             messages = queue.Queue(maxsize=256)
             receiver_stop = threading.Event()
