@@ -16,6 +16,8 @@ class ProfileBackupTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.profile = self.root / 'amma.json'
         self.initial = {'name': 'Amma', 'role': 'Mother', 'custom_instructions': 'Be kind.',
+                        'personalization': {'reply_length': 'brief', 'advice_style': 'practical',
+                            'humor': 'rare', 'follow_up': 'often'},
                         'api_key': 'private', 'confirmed_facts': {'family': 'private'},
                         'voice': {'provider': 'preserve'}, 'future': [1, 2]}
         self.profile.write_text(json.dumps(self.initial), encoding='utf-8')
@@ -39,6 +41,17 @@ class ProfileBackupTests(unittest.TestCase):
         self.assertEqual(result.name, 'Mama')
         expected = dict(self.initial, name='Mama')
         self.assertEqual(json.loads(self.profile.read_text()), expected)
+        self.assertEqual(result.personalization(), self.initial['personalization'])
+
+    def test_legacy_backup_keeps_current_preferences(self):
+        current = {'name': 'Amma', 'role': 'Mother', 'custom_instructions': '',
+                   'personalization': {'reply_length': 'detailed', 'advice_style': 'ask_first',
+                       'humor': 'off', 'follow_up': 'only_when_needed'}}
+        self.profile.write_text(json.dumps(current), encoding='utf-8')
+        self.document()
+        fields = preview_profile(self.backup)
+        result = apply_profile(fields, self.profile)
+        self.assertEqual(result.personalization(), current['personalization'])
 
     def test_export_cannot_overwrite_active_profile(self):
         with self.assertRaises(ValueError):
@@ -68,7 +81,9 @@ class ProfileBackupTests(unittest.TestCase):
         self.assertEqual(json.loads(self.profile.read_text()), self.initial)
 
     def test_unicode_and_length_boundaries(self):
-        fields = {'name': 'അമ്മ', 'role': 'r' * 500, 'custom_instructions': 'c' * 6000}
+        fields = {'name': 'അമ്മ', 'role': 'r' * 500, 'custom_instructions': 'c' * 6000,
+                  'personalization': {'reply_length': 'detailed', 'advice_style': 'practical',
+                      'humor': 'occasional', 'follow_up': 'often'}}
         apply_profile(fields, self.profile)
         export_profile(self.backup, self.profile)
         self.assertEqual(preview_profile(self.backup), fields)

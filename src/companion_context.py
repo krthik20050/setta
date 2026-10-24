@@ -7,6 +7,7 @@ import hashlib
 
 from .companion_memory import CompanionMemory
 from .address_preferences import address_request
+from .local_actions import parse_app_usage_statement
 
 
 @dataclass(frozen=True)
@@ -106,13 +107,15 @@ class ConversationSession:
         bundle = self.context.prepare(text, self.session_id, observations)
         source_id = self.memory.add_message(self.session_id, 'user', text, language,
                                 f'{turn_id}:user' if turn_id else None)
-        # Only explicit user commands promote a fact; inferred mood and camera
-        # observations never become permanent personality facts.
+        # Only explicit memory requests or clear user self-reports promote facts;
+        # inferred mood and camera observations never become permanent memories.
         remember = re.fullmatch(r'remember:\s*([^=\n]{1,80})\s*=\s*(.{1,1000})', text.strip(), re.I)
         forget = re.fullmatch(r'forget:\s*([^\n]{1,80})', text.strip(), re.I)
         spoken_note = re.fullmatch(r'remember that\s+(.{1,1000})', text.strip(), re.I)
         identity = re.fullmatch(r'my name is\s+([\w][\w .\-]{0,59})[.!]?', text.strip(), re.I)
         residence = re.fullmatch(r'I live in\s+([^\n]{1,100})', text.strip(), re.I)
+        known_name=next((row['value'] for row in self.memory.facts() if row['key']=='user_name'),None)
+        app_usage=parse_app_usage_statement(text,known_name,language)
         address=address_request(text,language)
         if address:
             bundle['address_request']=address
@@ -135,12 +138,17 @@ class ConversationSession:
             self.memory.forget_fact(key)
             bundle['memory_action'] = {'action': 'forget', 'key': key, 'status': 'removed_from_confirmed_facts',
                                        'note': 'Original conversation messages are still in the archive.'}
+        elif app_usage:
+            key='user_uses_app_for_'+app_usage['category']
+            self.memory.remember(key,app_usage['app'],source_id)
+            bundle['memory_action']={'action':'remember','key':key,'status':'saved',
+                'note':'Explicit user report of an app used for this task category.'}
         elif spoken_note:
             value = spoken_note.group(1).strip().rstrip('.')
             key = 'user_note_' + hashlib.sha256(value.casefold().encode('utf-8')).hexdigest()[:16]
             self.memory.remember(key, value, source_id)
             bundle['memory_action'] = {'action': 'remember', 'key': key, 'status': 'saved'}
-        if remember or forget or spoken_note or identity or residence or address:
+        if remember or forget or spoken_note or identity or residence or address or app_usage:
             bundle['confirmed_facts'] = self.memory.facts()[:20]
         # Provider failures keep the user's turn but never fabricate an assistant memory.
         reply = respond(text, language, bundle)
